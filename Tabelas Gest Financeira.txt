@@ -1,0 +1,116 @@
+Planilha Gestão Financeira
+
+-- Módulo
+Configurações
+
+Tabela
+  Banco
+
+Campos
+  Id_Banco
+  Nr_Banco
+  No_Banco
+ 
+Tabela
+  Agencia
+
+Campos
+  Id_Agencia
+  Id_Banco (fk)
+  Nr_Agencia
+  No_agencia_Agencia
+ 
+ 
+Tabela
+  Conta_corrente
+
+Campos
+  Id_Conta_corr
+  Id_Banco (fk)
+  Id_agencia (fk)
+  No_Conta_Corr
+  Nr_Conta_Corr
+  Dg_conta_Corr
+
+Tabela
+  Tipo_Operacao
+
+Campos
+  Id_Tp_Operacao
+  Ds_tp_operacao
+
+Tabela 
+Estado
+
+Campos
+id_cidade
+cd_ibge
+cd_ibge
+id_estado (fk estado)
+
+
+Tabela
+Cidade
+
+Campos
+  id_estado
+  no_estado
+  ds_estado                                                                      
+  cd_ibge
+
+
+Tabela
+Pessoa
+
+Campos
+  id_pessoa
+  no_pessoa
+  no fantasia
+  tp_pessoa
+  nr_documento
+  no_logradouro
+  nr_logradouro
+  ds_complemento
+  nr_inscricaoestadual
+  no_situacao_pessoa
+  tp_parte_interessada
+
+Tabela
+Grupo_categoria
+
+Campos
+  Id_grupo_categoria
+  Tp_categoria (entrada ou saída)
+  No_grupo_categoria
+
+
+Tabela
+Categoria
+
+Campos
+  Id_categoria
+  Id_grupo_categoria (fk)
+  No_categoria
+
+
+-- Módulo
+Lançamentos (principal)
+
+Tabela
+Lancamentos
+
+Campos
+  Id_lancamento
+  Id_conta_corr (fk conta_corrente)
+  Id_pessoa (fk pessoa)
+  Dt_Operacao  
+  Ds_lancamento
+  Qt_parcelas
+  Id_Categoria (fk categoria)
+  Vl_entrada
+  Vl_saida
+  Id_Tp_Operacao (fk tipo operação)
+  Dt_vencimento
+  Dt_compensação
+
+ 
