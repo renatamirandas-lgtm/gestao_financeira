@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, forwardRef, useImperativeHandle, useRef } from 'react';
 import { AgGridReact } from 'ag-grid-react';
-import { ColDef, GridReadyEvent, CellValueChangedEvent, RowDoubleClickedEvent, ModuleRegistry, ClientSideRowModelModule } from 'ag-grid-community';
+import { ColDef, GridReadyEvent, CellValueChangedEvent, ModuleRegistry, ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule } from 'ag-grid-community';
 import { Lancamento } from '@/types';
 import LancamentoDrawer from './LancamentoDrawer';
 
-ModuleRegistry.registerModules([ClientSideRowModelModule]);
+ModuleRegistry.registerModules([ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule]);
 
 export default function LancamentosGridPage() {
   const [lancamentos, setLancamentos] = useState<Lancamento[]>([]);
@@ -24,6 +24,7 @@ export default function LancamentosGridPage() {
   const [bancos, setBancos] = useState<Array<{ id: number; nome: string }>>([]);
   const [categorias, setCategorias] = useState<Array<{ id: number; nome: string; tipoGrupo?: string }>>([]);
   const [formasPagamento, setFormasPagamento] = useState<Array<{ id: string; nome: string }>>([]);
+  const [pessoas, setPessoas] = useState<Array<{ id: number; nome: string }>>([]);
   
   // Resumo
   const [resumo, setResumo] = useState({
@@ -43,36 +44,40 @@ export default function LancamentosGridPage() {
   const carregarDados = async () => {
     try {
       console.log('[GRID] Carregando dados...');
-      const [lancamentosRes, bancosRes, categoriasRes, formasRes] = await Promise.all([
+      const [lancamentosRes, bancosRes, categoriasRes, formasRes, pessoasRes] = await Promise.all([
         fetch('/api/lancamentos'),
         fetch('/api/bancos'),
         fetch('/api/categorias'),
-        fetch('/api/formas-pagamento')
+        fetch('/api/formas-pagamento'),
+        fetch('/api/pessoas')
       ]);
       
       const lancamentosData = await lancamentosRes.json();
       const bancosData = await bancosRes.json();
       const categoriasData = await categoriasRes.json();
       const formasData = await formasRes.json();
+      const pessoasData = await pessoasRes.json();
       
       console.log('[GRID] Dados carregados:', {
         lancamentos: lancamentosData.length,
         bancos: bancosData.length,
         categorias: categoriasData.length,
-        formas: formasData.length
+        formas: formasData.length,
+        pessoas: pessoasData.length
       });
       
       setLancamentos(lancamentosData);
       setBancos(bancosData);
       setCategorias(categoriasData);
       setFormasPagamento(formasData);
+      setPessoas(pessoasData);
     } catch (error) {
       console.error('[GRID] Erro ao carregar dados:', error);
     }
   };
 
-  const aplicarFiltros = () => {
-    let filtrados = [...lancamentos];
+  const aplicarFiltros = (dadosBase: Lancamento[] = lancamentos) => {
+    let filtrados = [...dadosBase];
     
     if (filtroConta) {
       filtrados = filtrados.filter(l => l.conta === filtroConta);
@@ -107,19 +112,24 @@ export default function LancamentosGridPage() {
       const saidas = l.saidas || 0;
       const valor = entradas > 0 ? entradas : saidas > 0 ? -saidas : (l as any).valor || 0;
       saldoParcial += valor;
-      const dataCompetencia = l.dataOperacao ? new Date(l.dataOperacao) : null;
-      const competencia = dataCompetencia
-        ? `${String(dataCompetencia.getMonth() + 1).padStart(2, '0')}/${dataCompetencia.getFullYear()}`
-        : '';
+      const dataOperacaoTexto = (() => {
+        const raw = (l.dataOperacao || '').toString();
+        if (!raw) return '';
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) return raw;
+        if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+          const [yyyy, mm, dd] = raw.slice(0, 10).split('-');
+          return `${dd}/${mm}/${yyyy}`;
+        }
+        return raw;
+      })();
       return {
         id: l.id || `temp-${index}`,
         conta: l.conta || '',
-        dataOperacao: l.dataOperacao || '',
-        dataOperacaoFormatada: l.dataOperacao ? new Date(l.dataOperacao).toLocaleDateString('pt-BR') : '',
+        dataOperacao: dataOperacaoTexto,
+        dataOperacaoFormatada: dataOperacaoTexto,
         clienteFornecedor: l.clienteFornecedor || '',
         descricao: l.descricao || '',
         categoria: l.categoria || '',
-        competencia,
         valor,
         entradas,
         saidas,
@@ -154,6 +164,246 @@ export default function LancamentosGridPage() {
   const compactCellStyle: any = { padding: '4px', fontSize: '12px' };
   const compactRightCellStyle: any = { padding: '4px', fontSize: '12px', textAlign: 'right' };
   const compactRightBoldCellStyle: any = { padding: '4px', fontSize: '12px', textAlign: 'right', fontWeight: '500' };
+  const normalizarTexto = (valor: string) => valor.trim().toLowerCase();
+
+  const ClienteFornecedorEditor = useMemo(() => {
+    return forwardRef((props: any, ref) => {
+      const [valor, setValor] = useState<string>(props.value || '');
+      const [sugestoes, setSugestoes] = useState<Array<{ id: number; nome: string }>>([]);
+      const [mostrarSugestoes, setMostrarSugestoes] = useState(false);
+      const inputRef = useRef<HTMLInputElement | null>(null);
+
+      const filtrarPessoas = (texto: string) => {
+        if (!texto || texto.trim() === '') {
+          setSugestoes([]);
+          setMostrarSugestoes(false);
+          return;
+        }
+        const textoLower = texto.toLowerCase();
+        const filtradas = pessoas.filter(p => p.nome.toLowerCase().includes(textoLower));
+        setSugestoes(filtradas.slice(0, 10));
+        setMostrarSugestoes(filtradas.length > 0);
+      };
+
+      const selecionarPessoa = (pessoa: { id: number; nome: string }) => {
+        setValor(pessoa.nome);
+        setSugestoes([]);
+        setMostrarSugestoes(false);
+        props.stopEditing();
+      };
+
+      useImperativeHandle(ref, () => ({
+        getValue() {
+          return valor;
+        },
+        isPopup() {
+          return true;
+        },
+        afterGuiAttached() {
+          setTimeout(() => {
+            if (inputRef.current) {
+              inputRef.current.focus();
+              inputRef.current.select();
+            }
+          }, 0);
+        }
+      }));
+
+      return (
+        <div style={{ position: 'relative' }}>
+          <input
+            type="text"
+            ref={inputRef}
+            value={valor}
+            onChange={(e) => {
+              const novoValor = e.target.value;
+              setValor(novoValor);
+              filtrarPessoas(novoValor);
+            }}
+            onFocus={(e) => {
+              if (e.target.value) {
+                filtrarPessoas(e.target.value);
+              }
+            }}
+            onBlur={() => {
+              setTimeout(() => setMostrarSugestoes(false), 200);
+            }}
+            placeholder="Digite para buscar ou digite um nome novo"
+            style={{ width: '100%', padding: '4px 6px', fontSize: '12px' }}
+          />
+          {mostrarSugestoes && sugestoes.length > 0 && (
+            <div style={{
+              position: 'absolute',
+              top: '100%',
+              left: 0,
+              right: 0,
+              background: 'white',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+              zIndex: 1000,
+              maxHeight: '200px',
+              overflowY: 'auto'
+            }}>
+              {sugestoes.map(pessoa => (
+                <div
+                  key={pessoa.id}
+                  onClick={() => selecionarPessoa(pessoa)}
+                  style={{
+                    padding: '8px',
+                    cursor: 'pointer',
+                    borderBottom: '1px solid #eee'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#f0f0f0';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'white';
+                  }}
+                >
+                  {pessoa.nome}
+                </div>
+              ))}
+            </div>
+          )}
+          {valor && 
+           !pessoas.some(p => p.nome.toLowerCase() === valor.toLowerCase()) &&
+           !mostrarSugestoes && (
+            <div style={{ 
+              marginTop: '4px', 
+              fontSize: '11px', 
+              color: '#0066cc',
+              fontStyle: 'italic'
+            }}>
+              ⓘ Pessoa não cadastrada. O nome será salvo para finalizar o cadastro depois.
+            </div>
+          )}
+        </div>
+      );
+    });
+  }, [pessoas]);
+
+  const DataOperacaoEditor = useMemo(() => {
+    return forwardRef((props: any, ref) => {
+      const valorRaw = props.value ? props.value.toString().trim() : '';
+      const valorBr = /^\d{4}-\d{2}-\d{2}/.test(valorRaw)
+        ? `${valorRaw.slice(8, 10)}/${valorRaw.slice(5, 7)}/${valorRaw.slice(0, 4)}`
+        : valorRaw;
+      const valorIso = /^\d{2}\/\d{2}\/\d{4}$/.test(valorBr)
+        ? `${valorBr.slice(6, 10)}-${valorBr.slice(3, 5)}-${valorBr.slice(0, 2)}`
+        : '';
+      const [valorTexto, setValorTexto] = useState<string>(valorBr);
+      const [valorDate, setValorDate] = useState<string>(valorIso);
+      const containerRef = useRef<HTMLDivElement | null>(null);
+      const inputRef = useRef<HTMLInputElement | null>(null);
+      const dateRef = useRef<HTMLInputElement | null>(null);
+      const textoRef = useRef<string>(valorBr);
+      const isoRef = useRef<string>(valorIso);
+      const pickingRef = useRef<boolean>(false);
+
+      useImperativeHandle(ref, () => ({
+        getValue() {
+          return textoRef.current || props.value || '';
+        },
+        isPopup() {
+          return true;
+        },
+        afterGuiAttached() {
+          setTimeout(() => {
+            if (inputRef.current) {
+              inputRef.current.focus();
+              inputRef.current.select();
+            }
+          }, 0);
+        }
+      }));
+
+      const abrirCalendario = () => {
+        if (dateRef.current) {
+          pickingRef.current = true;
+          dateRef.current.showPicker?.();
+          dateRef.current.click();
+        }
+      };
+
+      return (
+        <div
+          ref={containerRef}
+          style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <input
+            type="text"
+            ref={inputRef}
+            value={valorTexto}
+            onChange={(e) => {
+              const v = e.target.value.replace(/[^\d/]/g, '').slice(0, 10);
+              setValorTexto(v);
+              textoRef.current = v;
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onBlur={() => {
+              if (props.stopEditing) {
+                setTimeout(() => {
+                  if (pickingRef.current) return;
+                  if (containerRef.current?.contains(document.activeElement)) return;
+                  props.stopEditing();
+                }, 0);
+              }
+            }}
+            placeholder="dd/mm/aaaa"
+            style={{ width: '100%', padding: '4px 6px', fontSize: '12px' }}
+          />
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              abrirCalendario();
+            }}
+            style={{
+              border: '1px solid #ddd',
+              background: '#fff',
+              padding: '2px 6px',
+              fontSize: '12px',
+              cursor: 'pointer'
+            }}
+          >
+            📅
+          </button>
+          <input
+            type="date"
+            ref={dateRef}
+            value={valorDate}
+            onChange={(e) => {
+              const iso = e.target.value;
+              pickingRef.current = false;
+              setValorDate(iso);
+              if (iso) {
+                const texto = `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+                setValorTexto(texto);
+                textoRef.current = texto;
+                if (props.node && props.column) {
+                  props.node.setDataValue(props.column.getColId(), texto);
+                }
+              }
+              if (props.stopEditing) {
+                setTimeout(() => props.stopEditing(), 0);
+              }
+            }}
+            onBlur={() => {
+              pickingRef.current = false;
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{ position: 'absolute', opacity: 0, width: 0, height: 0 }}
+          />
+        </div>
+      );
+    });
+  }, []);
 
   const colDefs: ColDef[] = useMemo(() => [
     { 
@@ -162,35 +412,35 @@ export default function LancamentosGridPage() {
       width: 100,
       pinned: 'left',
       editable: true,
-      cellEditor: 'agDateCellEditor',
-      cellEditorParams: {
-        format: 'dd/mm/yyyy'
-      },
+      cellEditor: 'DataOperacaoEditor',
       cellStyle: compactCellStyle,
+      suppressKeyboardEvent: (params: any) => params.editing === true,
       valueGetter: (params) => {
-        if (!params.data?.dataOperacao) return null;
-        try {
-          return new Date(params.data.dataOperacao);
-        } catch {
-          return null;
-        }
+        return params.data?.dataOperacao || null;
       },
       valueSetter: (params) => {
-        if (params.newValue) {
-          const date = params.newValue instanceof Date ? params.newValue : new Date(params.newValue);
-          params.data.dataOperacao = date.toISOString().split('T')[0];
-          params.data.dataOperacaoFormatada = date.toLocaleDateString('pt-BR');
+        if (!params.newValue) return false;
+        const raw = params.newValue.toString().trim();
+        let novaData = '';
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+          novaData = raw;
+        } else if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+          novaData = `${raw.slice(8, 10)}/${raw.slice(5, 7)}/${raw.slice(0, 4)}`;
         }
+        if (!novaData) return false;
+        if (params.data.dataOperacao === novaData) return false;
+        params.data.dataOperacao = novaData;
+        params.data.dataOperacaoFormatada = novaData;
         return true;
       },
       valueFormatter: (params) => {
         if (!params.value) return '';
-        try {
-          const date = params.value instanceof Date ? params.value : new Date(params.value);
-          return date.toLocaleDateString('pt-BR');
-        } catch {
-          return params.data?.dataOperacaoFormatada || '';
+        const raw = params.value.toString().trim();
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) return raw;
+        if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+          return `${raw.slice(8, 10)}/${raw.slice(5, 7)}/${raw.slice(0, 4)}`;
         }
+        return params.data?.dataOperacaoFormatada || raw;
       }
     },
     { 
@@ -209,7 +459,10 @@ export default function LancamentosGridPage() {
       headerName: 'Cliente/Fornecedor',
       width: 180,
       editable: true,
-      cellStyle: compactCellStyle
+      cellStyle: compactCellStyle,
+      cellEditor: 'ClienteFornecedorEditor',
+      cellEditorPopup: true,
+      cellEditorPopupPosition: 'under'
     },
     { 
       field: 'categoria', 
@@ -231,13 +484,6 @@ export default function LancamentosGridPage() {
       cellEditorParams: () => ({
         values: formasPagamento.map(f => f.nome)
       }),
-      cellStyle: compactCellStyle
-    },
-    { 
-      field: 'competencia', 
-      headerName: 'Competência',
-      width: 110,
-      editable: false,
       cellStyle: compactCellStyle
     },
     { 
@@ -337,6 +583,10 @@ export default function LancamentosGridPage() {
     editable: true,
     cellStyle: { padding: '4px', fontSize: '12px' }
   }), []);
+  const components = useMemo(() => ({
+    ClienteFornecedorEditor,
+    DataOperacaoEditor
+  }), [ClienteFornecedorEditor, DataOperacaoEditor]);
 
   const [gridApi, setGridApi] = useState<any>(null);
   const [columnApi, setColumnApi] = useState<any>(null);
@@ -385,30 +635,72 @@ export default function LancamentosGridPage() {
       params.data.status = '-';
     }
     
-    // Se for uma linha nova (id começa com "new-"), salvar automaticamente
-    if (params.data.id?.toString().startsWith('new-')) {
-      // Aguardar um pouco para o usuário terminar de editar
-      clearTimeout((window as any).saveTimeout);
-      (window as any).saveTimeout = setTimeout(() => {
-        salvarLancamento(params.data);
-      }, 2000);
-    } else {
-      // Atualizar lançamento existente
-      clearTimeout((window as any).updateTimeout);
-      (window as any).updateTimeout = setTimeout(() => {
-        atualizarLancamento(params.data);
-      }, 2000);
+    const campo = params.colDef.field;
+    const id = params.data?.id?.toString();
+    if (!campo || !id || id.startsWith('new-') || params.newValue === params.oldValue) {
+      return;
     }
-    
-    // Atualizar resumo
-    aplicarFiltros();
+
+    const payload: any = {};
+    if (campo === 'dataOperacao') {
+      const raw = (params.data.dataOperacao || '').toString().trim();
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+        const [dd, mm, yyyy] = raw.split('/');
+        payload.dataOperacao = `${yyyy}-${mm}-${dd}`;
+      } else if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+        payload.dataOperacao = raw.slice(0, 10);
+      } else {
+        payload.dataOperacao = raw;
+      }
+    }
+    if (campo === 'conta') payload.conta = params.data.conta;
+    if (campo === 'clienteFornecedor') payload.clienteFornecedor = params.data.clienteFornecedor;
+    if (campo === 'categoria') payload.categoria = params.data.categoria;
+    if (campo === 'descricao') payload.descricao = params.data.descricao;
+    if (campo === 'formaOperacao') payload.formaOperacao = params.data.formaOperacao;
+    if (campo === 'parcelas') payload.parcelas = params.data.parcelas;
+    if (campo === 'valor') payload.valor = Math.abs(params.data.valor || 0);
+    if (campo === 'observacao') payload.observacao = params.data.observacao;
+
+    if (Object.keys(payload).length === 0) return;
+
+    try {
+      const response = await fetch(`/api/lancamentos/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Erro ao atualizar lançamento');
+      }
+      setLancamentos(prev => {
+        const atualizados = prev.map(l => {
+          if (l.id?.toString() !== id) return l;
+          const atualizado = { ...l, ...payload, entradas: params.data.entradas, saidas: params.data.saidas } as Lancamento;
+          if (campo === 'dataOperacao') {
+            params.data.dataOperacao = payload.dataOperacao;
+          }
+          return atualizado;
+        });
+        aplicarFiltros(atualizados);
+        return atualizados;
+      });
+    } catch (error) {
+      console.error('Erro ao atualizar lançamento:', error);
+      params.node.setDataValue(campo, params.oldValue);
+    }
   };
 
-  const handleRowDoubleClicked = (params: RowDoubleClickedEvent) => {
-    if (!params.data) return;
-    setLancamentoSelecionado(params.data as Lancamento);
-    setDrawerOpen(true);
+  const handleCellClicked = (params: any) => {
+    if (params.colDef?.editable) {
+      params.api.startEditingCell({
+        rowIndex: params.rowIndex,
+        colKey: params.colDef.field
+      });
+    }
   };
+
 
   const salvarLancamento = async (dados: any) => {
     try {
@@ -630,21 +922,30 @@ export default function LancamentosGridPage() {
 
       {/* Grid */}
       <div style={{ flex: 1, padding: '8px', overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+        <style jsx global>{`
+          .ag-cell-inline-editing {
+            box-shadow: inset 0 0 0 1px #0066cc;
+            background: #f7fbff;
+          }
+        `}</style>
         <div className="ag-theme-alpine" style={{ flex: 1, width: '100%', minHeight: '400px' }}>
           <AgGridReact
             rowData={rowData}
             columnDefs={colDefs}
             defaultColDef={defaultColDef}
+            components={components}
             onGridReady={onGridReady}
             rowHeight={28}
             headerHeight={28}
             suppressRowClickSelection={false}
             rowSelection="single"
             onCellValueChanged={handleCellValueChanged}
-            onRowDoubleClicked={handleRowDoubleClicked}
+            onCellClicked={handleCellClicked}
             enterNavigatesVertically={true}
             enterNavigatesVerticallyAfterEdit={true}
             suppressClickEdit={false}
+            singleClickEdit={true}
+            stopEditingWhenCellsLoseFocus={true}
             animateRows={false}
             enableRangeSelection={true}
             undoRedoCellEditing={true}
