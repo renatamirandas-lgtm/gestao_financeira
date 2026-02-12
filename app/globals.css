@@ -15,6 +15,31 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+html, body, #__next {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* AG-Grid customizações */
+.ag-theme-alpine {
+  --ag-font-size: 12px;
+  --ag-header-height: 32px;
+  --ag-row-height: 32px;
+  --ag-cell-horizontal-padding: 4px;
+  height: 100% !important;
+  width: 100% !important;
+}
+
+.ag-theme-alpine .ag-root-wrapper {
+  border: 1px solid #ddd;
+  height: 100% !important;
+}
+
+.ag-theme-alpine .ag-center-cols-viewport {
+  min-height: 200px;
+}
+
 body {
   background-color: #f5f5f5;
   color: #333;

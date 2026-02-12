@@ -6,13 +6,19 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "db:up": "docker-compose up -d",
+    "db:down": "docker-compose down",
+    "db:init": "npx tsx scripts/init-db.ts",
+    "db:logs": "docker-compose logs -f postgres"
   },
   "dependencies": {
     "@types/node": "^20.8.0",
     "@types/pg": "^8.16.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
+    "ag-grid-community": "^35.0.0",
+    "ag-grid-react": "^35.0.0",
     "dotenv": "^17.2.3",
     "next": "^14.0.0",
     "pg": "^8.16.3",

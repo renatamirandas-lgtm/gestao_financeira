@@ -16,9 +16,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const agencia = await DataService.addAgencia(body);
     return NextResponse.json(agencia, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erro ao adicionar agência:', error);
-    return NextResponse.json({ error: 'Erro ao adicionar agência' }, { status: 500 });
+    const errorMessage = error?.message || 'Erro ao adicionar agência';
+    return NextResponse.json({ error: errorMessage, details: error?.code }, { status: 500 });
   }
 }
 

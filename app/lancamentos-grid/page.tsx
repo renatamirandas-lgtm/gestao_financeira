@@ -13,6 +13,7 @@ export default function LancamentosGridPage() {
   const [rowData, setRowData] = useState<any[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [lancamentoSelecionado, setLancamentoSelecionado] = useState<Lancamento | null>(null);
+  const [linhasModificadas, setLinhasModificadas] = useState<Set<string>>(new Set());
   
   // Filtros
   const [filtroConta, setFiltroConta] = useState<string>('');
@@ -128,6 +129,7 @@ export default function LancamentosGridPage() {
         dataOperacao: dataOperacaoTexto,
         dataOperacaoFormatada: dataOperacaoTexto,
         clienteFornecedor: l.clienteFornecedor || '',
+        clienteFornecedorId: (l as any).clienteFornecedorId || null,
         descricao: l.descricao || '',
         categoria: l.categoria || '',
         valor,
@@ -172,23 +174,41 @@ export default function LancamentosGridPage() {
       const [sugestoes, setSugestoes] = useState<Array<{ id: number; nome: string }>>([]);
       const [mostrarSugestoes, setMostrarSugestoes] = useState(false);
       const inputRef = useRef<HTMLInputElement | null>(null);
+      const debounceRef = useRef<any>(null);
+      const requestIdRef = useRef<number>(0);
 
-      const filtrarPessoas = (texto: string) => {
-        if (!texto || texto.trim() === '') {
+      const buscarPessoas = (texto: string) => {
+        const termo = texto.trim();
+        if (!termo) {
           setSugestoes([]);
           setMostrarSugestoes(false);
           return;
         }
-        const textoLower = texto.toLowerCase();
-        const filtradas = pessoas.filter(p => p.nome.toLowerCase().includes(textoLower));
-        setSugestoes(filtradas.slice(0, 10));
-        setMostrarSugestoes(filtradas.length > 0);
+        if (debounceRef.current) clearTimeout(debounceRef.current);
+        debounceRef.current = setTimeout(async () => {
+          const requestId = ++requestIdRef.current;
+          try {
+            const response = await fetch(`/api/clientes-fornecedores?search=${encodeURIComponent(termo)}`);
+            if (!response.ok) return;
+            const data = await response.json();
+            if (requestId !== requestIdRef.current) return;
+            setSugestoes(Array.isArray(data) ? data : []);
+            setMostrarSugestoes(Array.isArray(data) && data.length > 0);
+          } catch {
+            setSugestoes([]);
+            setMostrarSugestoes(false);
+          }
+        }, 300);
       };
 
       const selecionarPessoa = (pessoa: { id: number; nome: string }) => {
         setValor(pessoa.nome);
         setSugestoes([]);
         setMostrarSugestoes(false);
+        if (props.node && props.column) {
+          props.node.setDataValue(props.column.getColId(), pessoa.nome);
+          props.node.data.clienteFornecedorId = pessoa.id;
+        }
         props.stopEditing();
       };
 
@@ -200,12 +220,12 @@ export default function LancamentosGridPage() {
           return true;
         },
         afterGuiAttached() {
-          setTimeout(() => {
+          requestAnimationFrame(() => {
             if (inputRef.current) {
               inputRef.current.focus();
               inputRef.current.select();
             }
-          }, 0);
+          });
         }
       }));
 
@@ -218,15 +238,23 @@ export default function LancamentosGridPage() {
             onChange={(e) => {
               const novoValor = e.target.value;
               setValor(novoValor);
-              filtrarPessoas(novoValor);
+              buscarPessoas(novoValor);
+              if (props.node?.data) {
+                props.node.data.clienteFornecedorId = null;
+              }
             }}
             onFocus={(e) => {
               if (e.target.value) {
-                filtrarPessoas(e.target.value);
+                buscarPessoas(e.target.value);
               }
             }}
             onBlur={() => {
-              setTimeout(() => setMostrarSugestoes(false), 200);
+              setTimeout(() => {
+                setMostrarSugestoes(false);
+                if (props.node && props.column) {
+                  props.node.setDataValue(props.column.getColId(), valor);
+                }
+              }, 200);
             }}
             placeholder="Digite para buscar ou digite um nome novo"
             style={{ width: '100%', padding: '4px 6px', fontSize: '12px' }}
@@ -350,6 +378,11 @@ export default function LancamentosGridPage() {
                 setTimeout(() => {
                   if (pickingRef.current) return;
                   if (containerRef.current?.contains(document.activeElement)) return;
+                  if (/^\d{2}\/\d{2}\/\d{4}$/.test(textoRef.current)) {
+                    if (props.node && props.column) {
+                      props.node.setDataValue(props.column.getColId(), textoRef.current);
+                    }
+                  }
                   props.stopEditing();
                 }, 0);
               }
@@ -502,17 +535,20 @@ export default function LancamentosGridPage() {
       cellEditorParams: {
         precision: 2
       },
-      cellStyle: compactRightBoldCellStyle,
+      cellStyle: (params: any) => {
+        const valor = params.value || 0;
+        return {
+          padding: '4px',
+          fontSize: '12px',
+          textAlign: 'right',
+          fontWeight: '500',
+          color: valor >= 0 ? '#28a745' : '#dc3545'
+        };
+      },
       valueFormatter: (params) => {
         const valor = params.value || 0;
         const sinal = valor < 0 ? '-' : '';
         return `${sinal}R$ ${Math.abs(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      },
-      cellRenderer: (params: any) => {
-        const valor = params.value || 0;
-        const color = valor >= 0 ? '#28a745' : '#dc3545';
-        const sinal = valor < 0 ? '-' : '';
-        return `<span style="color: ${color}">${sinal}R$ ${Math.abs(valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>`;
       },
       valueSetter: (params) => {
         const novoValor = parseFloat(params.newValue) || 0;
@@ -545,15 +581,18 @@ export default function LancamentosGridPage() {
       headerName: 'Situação',
       width: 100,
       editable: false,
-      cellStyle: compactCellStyle,
-      cellRenderer: (params: any) => {
+      cellStyle: (params: any) => {
         const status = params.value || '-';
         const colors: any = {
           'Realizado': '#28a745',
           'Planejado': '#ffc107',
           '-': '#6c757d'
         };
-        return `<span style="color: ${colors[status] || '#6c757d'}">${status}</span>`;
+        return {
+          padding: '4px',
+          fontSize: '12px',
+          color: colors[status] || '#6c757d'
+        };
       }
     },
     { 
@@ -562,17 +601,6 @@ export default function LancamentosGridPage() {
       width: 200,
       editable: true,
       cellStyle: compactCellStyle
-    },
-    { 
-      field: 'saldoParcial', 
-      headerName: 'Saldo parcial',
-      width: 130,
-      editable: false,
-      cellStyle: compactRightBoldCellStyle,
-      valueFormatter: (params) => {
-        const valor = params.value || 0;
-        return `R$ ${valor.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      }
     }
   ], [bancos, categorias, formasPagamento]);
 
@@ -635,70 +663,118 @@ export default function LancamentosGridPage() {
       params.data.status = '-';
     }
     
-    const campo = params.colDef.field;
     const id = params.data?.id?.toString();
-    if (!campo || !id || id.startsWith('new-') || params.newValue === params.oldValue) {
+    if (id && !id.startsWith('new-') && params.newValue !== params.oldValue) {
+      setLinhasModificadas(prev => new Set(prev).add(id));
+    }
+  };
+
+  const handleSalvar = async () => {
+    if (linhasModificadas.size === 0) {
+      alert('Nenhuma alteração para salvar');
       return;
     }
 
-    const payload: any = {};
-    if (campo === 'dataOperacao') {
-      const raw = (params.data.dataOperacao || '').toString().trim();
-      if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
-        const [dd, mm, yyyy] = raw.split('/');
-        payload.dataOperacao = `${yyyy}-${mm}-${dd}`;
-      } else if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-        payload.dataOperacao = raw.slice(0, 10);
-      } else {
-        payload.dataOperacao = raw;
-      }
-    }
-    if (campo === 'conta') payload.conta = params.data.conta;
-    if (campo === 'clienteFornecedor') payload.clienteFornecedor = params.data.clienteFornecedor;
-    if (campo === 'categoria') payload.categoria = params.data.categoria;
-    if (campo === 'descricao') payload.descricao = params.data.descricao;
-    if (campo === 'formaOperacao') payload.formaOperacao = params.data.formaOperacao;
-    if (campo === 'parcelas') payload.parcelas = params.data.parcelas;
-    if (campo === 'valor') payload.valor = Math.abs(params.data.valor || 0);
-    if (campo === 'observacao') payload.observacao = params.data.observacao;
-
-    if (Object.keys(payload).length === 0) return;
-
     try {
-      const response = await fetch(`/api/lancamentos/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Erro ao atualizar lançamento');
-      }
-      setLancamentos(prev => {
-        const atualizados = prev.map(l => {
-          if (l.id?.toString() !== id) return l;
-          const atualizado = { ...l, ...payload, entradas: params.data.entradas, saidas: params.data.saidas } as Lancamento;
-          if (campo === 'dataOperacao') {
-            params.data.dataOperacao = payload.dataOperacao;
+      const idsModificados = Array.from(linhasModificadas);
+      const promessas = idsModificados.map(async (id) => {
+        const linha = rowData.find(r => r.id?.toString() === id);
+        if (!linha) return;
+
+        const payload: any = {
+          conta: linha.conta,
+          descricao: linha.descricao,
+          categoria: linha.categoria,
+          valor: linha.valor || 0,
+          entradas: linha.entradas || 0,
+          saidas: linha.saidas || 0,
+          formaOperacao: linha.formaOperacao,
+          parcelas: linha.parcelas,
+          observacao: linha.observacao
+        };
+
+        if (linha.dataOperacao) {
+          const raw = linha.dataOperacao.toString().trim();
+          if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+            const [dd, mm, yyyy] = raw.split('/');
+            payload.dataOperacao = `${yyyy}-${mm}-${dd}`;
+          } else if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+            payload.dataOperacao = raw.slice(0, 10);
           }
-          return atualizado;
+        }
+
+        if (linha.clienteFornecedor) {
+          const nome = linha.clienteFornecedor.toString().trim();
+          payload.clienteFornecedor = nome;
+          let pessoaId = linha.clienteFornecedorId || null;
+          if (nome && !pessoaId) {
+            try {
+              const response = await fetch(`/api/clientes-fornecedores?search=${encodeURIComponent(nome)}`);
+              if (response.ok) {
+                const data = await response.json();
+                const encontrada = Array.isArray(data)
+                  ? data.find((p: any) => normalizarTexto(p.nome) === normalizarTexto(nome))
+                  : null;
+                if (encontrada?.id) {
+                  pessoaId = encontrada.id;
+                }
+              }
+              if (!pessoaId) {
+                const createRes = await fetch('/api/pessoas', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    nome,
+                    tipoPessoa: 'Física',
+                    situacaoPessoa: 'Incompleto'
+                  })
+                });
+                if (createRes.ok) {
+                  const novaPessoa = await createRes.json();
+                  pessoaId = novaPessoa.id;
+                }
+              }
+            } catch (error) {
+              console.error('Erro ao garantir pessoa:', error);
+            }
+          }
+          if (pessoaId) {
+            payload.clienteFornecedorId = pessoaId;
+          }
+        }
+
+        const response = await fetch(`/api/lancamentos/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
         });
-        aplicarFiltros(atualizados);
-        return atualizados;
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(`Erro na linha ${id}: ${errorData.error || 'Erro ao atualizar'}`);
+        }
       });
-    } catch (error) {
-      console.error('Erro ao atualizar lançamento:', error);
-      params.node.setDataValue(campo, params.oldValue);
+
+      await Promise.all(promessas);
+      setLinhasModificadas(new Set());
+      alert(`${idsModificados.length} lançamento(s) salvo(s) com sucesso!`);
+    } catch (error: any) {
+      console.error('Erro ao salvar:', error);
+      alert(error.message || 'Erro ao salvar alterações');
     }
   };
 
   const handleCellClicked = (params: any) => {
-    if (params.colDef?.editable) {
-      params.api.startEditingCell({
-        rowIndex: params.rowIndex,
-        colKey: params.colDef.field
-      });
-    }
+    if (!params.colDef?.editable) return;
+    if (params.colDef.field === 'conta') return;
+    if (params.colDef.field === 'categoria') return;
+    if (params.colDef.field === 'formaOperacao') return;
+    const target = params.event?.target as HTMLElement | undefined;
+    if (target && (target.tagName === 'SELECT' || target.tagName === 'OPTION')) return;
+    params.api.startEditingCell({
+      rowIndex: params.rowIndex,
+      colKey: params.colDef.field
+    });
   };
 
 
@@ -799,21 +875,40 @@ export default function LancamentosGridPage() {
         boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
       }}>
         <h1 style={{ margin: 0, fontSize: '18px', fontWeight: '600' }}>Lançamentos Financeiros</h1>
-        <button
-          onClick={handleNovo}
-          style={{
-            backgroundColor: '#28a745',
-            color: 'white',
-            border: 'none',
-            padding: '8px 16px',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: '500'
-          }}
-        >
-          + Novo
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={handleSalvar}
+            disabled={linhasModificadas.size === 0}
+            style={{
+              backgroundColor: linhasModificadas.size > 0 ? '#007bff' : '#6c757d',
+              color: 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '4px',
+              cursor: linhasModificadas.size > 0 ? 'pointer' : 'not-allowed',
+              fontSize: '14px',
+              fontWeight: '500',
+              opacity: linhasModificadas.size > 0 ? 1 : 0.6
+            }}
+          >
+            💾 Salvar {linhasModificadas.size > 0 ? `(${linhasModificadas.size})` : ''}
+          </button>
+          <button
+            onClick={handleNovo}
+            style={{
+              backgroundColor: '#28a745',
+              color: 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            + Novo
+          </button>
+        </div>
       </div>
 
       {/* Filtros e Resumo */}
@@ -945,7 +1040,7 @@ export default function LancamentosGridPage() {
             enterNavigatesVerticallyAfterEdit={true}
             suppressClickEdit={false}
             singleClickEdit={true}
-            stopEditingWhenCellsLoseFocus={true}
+            stopEditingWhenCellsLoseFocus={false}
             animateRows={false}
             enableRangeSelection={true}
             undoRedoCellEditing={true}

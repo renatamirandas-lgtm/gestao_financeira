@@ -1,0 +1,23 @@
+Módulo Configurações
+Ajustado e Testado (MVP)
+Banco
+Agencia
+Pessoa
+Forma de Operação
+Grupo Categoria
+Categoria
+
+
+Melhorias
+Geral
+Nas configurações, só pode ser possível excluir registros que não tenham sido usados nos lançamentos.
+
+Tela Pessoa 
+Caso já tenha sido usado, a única possibilidade deve ser INATIVAR.
+Para cadastro de PESSOAS, pode ser possível alterar apenas logradouro, numero, complemento e IE
+Colocar máscara CPF ou CNPJ de acordo com o TIPO selecionado
+Caso o CPF já tenha sido gravado, não é permitido repetir CPF
+Colocar filtro para Pesquisa de Pessoas
+
+Campo data na grid
+Permitir digitar a data

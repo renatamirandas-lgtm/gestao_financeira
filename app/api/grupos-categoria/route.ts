@@ -16,9 +16,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const grupo = await DataService.addGrupoCategoria(body);
     return NextResponse.json(grupo, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erro ao adicionar grupo de categoria:', error);
-    return NextResponse.json({ error: 'Erro ao adicionar grupo de categoria' }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'Erro ao adicionar grupo de categoria' }, { status: 500 });
   }
 }
 

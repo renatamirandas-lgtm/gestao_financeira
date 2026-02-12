@@ -133,6 +133,11 @@ export default function ConfiguracoesPage() {
 
   const salvarFormaOperacao = async () => {
     try {
+      if (!formFormaOperacao.nome || formFormaOperacao.nome.trim() === '') {
+        alert('O nome da forma de operação é obrigatório');
+        return;
+      }
+
       const res = await fetch('/api/formas-pagamento', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -142,7 +147,8 @@ export default function ConfiguracoesPage() {
         setFormFormaOperacao({ nome: '' });
         carregarDados();
       } else {
-        alert('Erro ao salvar forma de operação');
+        const errorData = await res.json();
+        alert(`Erro ao salvar forma de operação: ${errorData.error || 'Erro desconhecido'}`);
       }
     } catch (error) {
       alert('Erro ao salvar forma de operação');
@@ -161,6 +167,11 @@ export default function ConfiguracoesPage() {
 
   const salvarGrupoCategoria = async () => {
     try {
+      if (!formGrupoCategoria.nome || formGrupoCategoria.nome.trim() === '') {
+        alert('O nome do grupo de categoria é obrigatório');
+        return;
+      }
+
       const res = await fetch('/api/grupos-categoria', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -170,7 +181,8 @@ export default function ConfiguracoesPage() {
         setFormGrupoCategoria({ tipoCategoria: 'Saída', nome: '' });
         carregarDados();
       } else {
-        alert('Erro ao salvar grupo de categoria');
+        const errorData = await res.json();
+        alert(`Erro ao salvar grupo de categoria: ${errorData.error || 'Erro desconhecido'}`);
       }
     } catch (error) {
       alert('Erro ao salvar grupo de categoria');
@@ -188,8 +200,12 @@ export default function ConfiguracoesPage() {
   };
 
   const salvarCategoria = async () => {
-    if (!formCategoria.grupoCategoriaId) {
+    if (!formCategoria.grupoCategoriaId || formCategoria.grupoCategoriaId === 0) {
       alert('Selecione um grupo de categoria');
+      return;
+    }
+    if (!formCategoria.nome || formCategoria.nome.trim() === '') {
+      alert('O nome da categoria é obrigatório');
       return;
     }
     try {
@@ -202,7 +218,8 @@ export default function ConfiguracoesPage() {
         setFormCategoria({ grupoCategoriaId: 0, nome: '' });
         carregarDados();
       } else {
-        alert('Erro ao salvar categoria');
+        const errorData = await res.json();
+        alert(`Erro ao salvar categoria: ${errorData.error || 'Erro desconhecido'}`);
       }
     } catch (error) {
       alert('Erro ao salvar categoria');
@@ -220,6 +237,10 @@ export default function ConfiguracoesPage() {
   };
 
   const salvarPessoa = async () => {
+    if (!formPessoa.nome || formPessoa.nome.trim() === '') {
+      alert('O nome da pessoa é obrigatório');
+      return;
+    }
     try {
       const res = await fetch('/api/pessoas', {
         method: 'POST',
@@ -241,7 +262,8 @@ export default function ConfiguracoesPage() {
         });
         carregarDados();
       } else {
-        alert('Erro ao salvar pessoa');
+        const errorData = await res.json();
+        alert(`Erro ao salvar pessoa: ${errorData.error || 'Erro desconhecido'}`);
       }
     } catch (error) {
       alert('Erro ao salvar pessoa');
@@ -263,6 +285,10 @@ export default function ConfiguracoesPage() {
       alert('Selecione um banco');
       return;
     }
+    if (!formAgencia.nome || formAgencia.nome.trim() === '') {
+      alert('O nome da agência é obrigatório');
+      return;
+    }
     try {
       const res = await fetch('/api/agencias', {
         method: 'POST',
@@ -273,7 +299,8 @@ export default function ConfiguracoesPage() {
         setFormAgencia({ bancoId: 0, numero: '', nome: '' });
         carregarDados();
       } else {
-        alert('Erro ao salvar agência');
+        const errorData = await res.json();
+        alert(`Erro ao salvar agência: ${errorData.error || 'Erro desconhecido'}`);
       }
     } catch (error) {
       alert('Erro ao salvar agência');
@@ -630,6 +657,15 @@ export default function ConfiguracoesPage() {
                       onChange={(e) => setFormPessoa({ ...formPessoa, inscricaoEstadual: e.target.value })}
                       style={{ padding: '8px' }}
                     />
+                    <select
+                      value={formPessoa.tipoParteInteressada || ''}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, tipoParteInteressada: e.target.value })}
+                      style={{ padding: '8px' }}
+                    >
+                      <option value="">Selecione...</option>
+                      <option value="C">Cliente</option>
+                      <option value="F">Fornecedor</option>
+                    </select>
                     <button onClick={salvarPessoa} style={{ padding: '10px', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
                       Salvar
                     </button>
@@ -644,22 +680,45 @@ export default function ConfiguracoesPage() {
                           <th style={{ padding: '10px', textAlign: 'left' }}>Nome</th>
                           <th style={{ padding: '10px', textAlign: 'left' }}>Tipo</th>
                           <th style={{ padding: '10px', textAlign: 'left' }}>Documento</th>
+                          <th style={{ padding: '10px', textAlign: 'left' }}>Tipo Parte Interessada</th>
                           <th style={{ padding: '10px' }}>Ações</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {pessoas.map(pessoa => (
-                          <tr key={pessoa.id}>
-                            <td style={{ padding: '8px' }}>{pessoa.nome}</td>
-                            <td style={{ padding: '8px' }}>{pessoa.tipoPessoa}</td>
-                            <td style={{ padding: '8px' }}>{pessoa.documento || '-'}</td>
-                            <td style={{ padding: '8px', textAlign: 'center' }}>
-                              <button onClick={() => pessoa.id && excluirPessoa(pessoa.id)} style={{ padding: '4px 8px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                                Excluir
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {pessoas.map(pessoa => {
+                          const isIncompleta = pessoa.situacaoPessoa === 'Incompleto' || (pessoa as any)._isIncompleta;
+                          return (
+                            <tr 
+                              key={pessoa.id}
+                              style={{
+                                backgroundColor: isIncompleta ? '#fff3cd' : 'transparent',
+                                borderLeft: isIncompleta ? '3px solid #ffc107' : 'none'
+                              }}
+                            >
+                              <td style={{ padding: '8px' }}>
+                                {pessoa.nome}
+                                {isIncompleta && (
+                                  <span style={{ 
+                                    marginLeft: '8px', 
+                                    fontSize: '11px', 
+                                    color: '#856404',
+                                    fontStyle: 'italic'
+                                  }}>
+                                    (Cadastro incompleto - Finalize o cadastro)
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ padding: '8px' }}>{pessoa.tipoPessoa}</td>
+                              <td style={{ padding: '8px' }}>{pessoa.documento || '-'}</td>
+                              <td style={{ padding: '8px' }}>{pessoa.tipoParteInteressada === 'C' ? 'Cliente' : pessoa.tipoParteInteressada === 'F' ? 'Fornecedor' : '-'}</td>
+                              <td style={{ padding: '8px', textAlign: 'center' }}>
+                                <button onClick={() => pessoa.id && excluirPessoa(pessoa.id)} style={{ padding: '4px 8px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+                                  Excluir
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

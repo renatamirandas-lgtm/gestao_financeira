@@ -16,9 +16,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const forma = await DataService.addFormaOperacao(body);
     return NextResponse.json(forma, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erro ao adicionar forma de operação:', error);
-    return NextResponse.json({ error: 'Erro ao adicionar forma de operação' }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'Erro ao adicionar forma de operação' }, { status: 500 });
   }
 }
 

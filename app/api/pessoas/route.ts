@@ -16,9 +16,10 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const pessoa = await DataService.addPessoa(body);
     return NextResponse.json(pessoa, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erro ao adicionar pessoa:', error);
-    return NextResponse.json({ error: 'Erro ao adicionar pessoa' }, { status: 500 });
+    const errorMessage = error?.message || 'Erro ao adicionar pessoa';
+    return NextResponse.json({ error: errorMessage, details: error?.code }, { status: 500 });
   }
 }
 
