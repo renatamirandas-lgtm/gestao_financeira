@@ -304,7 +304,7 @@ export const DataService = {
               VALUES ($1, $2, $3)
               RETURNING id_pessoa
               `,
-              [`{${nome}}`, '{F}', '{Incompleto}']
+              [`{${nome}}`, ['F'], null]
             );
             pessoaId = novaPessoa.rows[0].id_pessoa;
             console.log('[ADD] Nova pessoa criada com ID:', pessoaId);
@@ -442,10 +442,34 @@ export const DataService = {
         valorLancamento = entradas - saidas;
       }
       
-      let pessoaId: number | null = (lancamento as any).clienteFornecedorId || null;
-      if (!pessoaId && lancamento.clienteFornecedor && lancamento.clienteFornecedor.trim() !== '') {
+      let pessoaId: number | null = (lancamento as any).clienteFornecedorId ?? null;
+      const nomeInformado =
+        lancamento.clienteFornecedor && lancamento.clienteFornecedor.trim() !== ''
+          ? lancamento.clienteFornecedor.trim()
+          : '';
+
+      if (pessoaId && nomeInformado) {
         try {
-          const nome = lancamento.clienteFornecedor.trim();
+          const check = await pool.query('SELECT no_pessoa FROM pessoa WHERE id_pessoa = $1', [pessoaId]);
+          if (check.rows.length) {
+            const nomeDb = getArrayValue(check.rows[0].no_pessoa);
+            const db = (nomeDb || '').toLowerCase().trim();
+            const inf = nomeInformado.toLowerCase();
+            const mesmoNome =
+              db === inf || (db.length > 0 && db.startsWith(inf));
+            if (!mesmoNome) {
+              console.log('[UPDATE] Nome diferente do id_pessoa; recalculando pessoa. id=', pessoaId, 'db=', nomeDb, 'informado=', nomeInformado);
+              pessoaId = null;
+            }
+          }
+        } catch (e: any) {
+          console.log('[UPDATE] Erro ao validar pessoa pelo id:', e?.message);
+        }
+      }
+
+      if (!pessoaId && nomeInformado) {
+        try {
+          const nome = nomeInformado;
           console.log('[UPDATE] Buscando pessoa:', nome);
           
           const pessoaExistente = await pool.query(
@@ -471,7 +495,7 @@ export const DataService = {
               VALUES ($1, $2, $3)
               RETURNING id_pessoa
               `,
-              [`{${nome}}`, '{F}', '{Incompleto}']
+              [`{${nome}}`, ['F'], null]
             );
             pessoaId = novaPessoa.rows[0].id_pessoa;
             console.log('[UPDATE] Nova pessoa criada com ID:', pessoaId);
@@ -881,7 +905,7 @@ export const DataService = {
           id_pessoa as id,
           no_pessoa as nome
         FROM pessoa
-        WHERE no_pessoa ILIKE $1
+        WHERE no_pessoa::text ILIKE $1
         ORDER BY no_pessoa ASC
         LIMIT 10
         `,
@@ -965,13 +989,15 @@ export const DataService = {
       `, [
         `{${pessoa.nome.trim()}}`,
         pessoa.nomeFantasia && pessoa.nomeFantasia.trim() !== '' ? `{${pessoa.nomeFantasia.trim()}}` : null,
-        `{${pessoa.tipoPessoa === 'Jurídica' ? 'J' : 'F'}}`,
+        pessoa.tipoPessoa === 'Jurídica' ? ['J'] : ['F'],
         pessoa.documento && pessoa.documento.trim() !== '' ? `{${pessoa.documento.trim()}}` : null,
         pessoa.logradouro && pessoa.logradouro.trim() !== '' ? `{${pessoa.logradouro.trim()}}` : null,
         pessoa.numeroLogradouro && pessoa.numeroLogradouro.trim() !== '' ? `{${pessoa.numeroLogradouro.trim()}}` : null,
         pessoa.complemento && pessoa.complemento.trim() !== '' ? `{${pessoa.complemento.trim()}}` : null,
         pessoa.inscricaoEstadual && pessoa.inscricaoEstadual.trim() !== '' ? `{${pessoa.inscricaoEstadual.trim()}}` : null,
-        pessoa.situacaoPessoa && pessoa.situacaoPessoa.trim() !== '' ? `{${pessoa.situacaoPessoa.trim()}}` : null,
+        pessoa.situacaoPessoa && pessoa.situacaoPessoa.trim().length === 1
+          ? `{${pessoa.situacaoPessoa.trim()}}`
+          : null,
         pessoa.tipoParteInteressada === 'C' ? 1 : pessoa.tipoParteInteressada === 'F' ? 2 : null
       ]);
       

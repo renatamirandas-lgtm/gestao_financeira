@@ -8,13 +8,53 @@ import LancamentoDrawer from './LancamentoDrawer';
 
 ModuleRegistry.registerModules([ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule]);
 
+function linhaGridDifereDoServidor(row: any, srv: Lancamento): boolean {
+  const ts = (v: any) => (v == null ? '' : String(v)).trim();
+  const tn = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const dIso = (v: any) => {
+    if (v == null || v === '') return '';
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+  };
+  const normOp = (raw: any) => {
+    const s = ts(raw);
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      const [dd, mm, yyyy] = s.split('/');
+      return `${yyyy}-${mm}-${dd}`;
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    return dIso(raw);
+  };
+  if (ts(row.descricao) !== ts(srv.descricao)) return true;
+  if (ts(row.conta) !== ts(srv.conta)) return true;
+  if (ts(row.categoria) !== ts(srv.categoria)) return true;
+  if (tn(row.entradas) !== tn(srv.entradas)) return true;
+  if (tn(row.saidas) !== tn(srv.saidas)) return true;
+  if (ts(row.formaOperacao) !== ts(srv.formaOperacao)) return true;
+  if (tn(row.parcelas) !== tn(srv.parcelas)) return true;
+  if (ts(row.observacao) !== ts((srv as any).observacao)) return true;
+  if (ts(row.clienteFornecedor) !== ts(srv.clienteFornecedor)) return true;
+  if (String((row as any).clienteFornecedorId ?? '') !== String((srv as any).clienteFornecedorId ?? '')) return true;
+  if (dIso(row.dataVencimento) !== dIso(srv.dataVencimento)) return true;
+  if (dIso(row.dataCompensacao) !== dIso(srv.dataCompensacao)) return true;
+  if (normOp(row.dataOperacao) !== normOp(srv.dataOperacao)) return true;
+  return false;
+}
+
 export default function LancamentosGridPage() {
   const [lancamentos, setLancamentos] = useState<Lancamento[]>([]);
   const [rowData, setRowData] = useState<any[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [lancamentoSelecionado, setLancamentoSelecionado] = useState<Lancamento | null>(null);
   const [linhasModificadas, setLinhasModificadas] = useState<Set<string>>(new Set());
-  
+  const lancamentosRef = useRef<Lancamento[]>([]);
+  useEffect(() => {
+    lancamentosRef.current = lancamentos;
+  }, [lancamentos]);
+
   // Filtros
   const [filtroConta, setFiltroConta] = useState<string>('');
   const [filtroMes, setFiltroMes] = useState<string>('');
@@ -208,6 +248,10 @@ export default function LancamentosGridPage() {
         if (props.node && props.column) {
           props.node.setDataValue(props.column.getColId(), pessoa.nome);
           props.node.data.clienteFornecedorId = pessoa.id;
+          const idLinha = props.node.data?.id?.toString();
+          if (idLinha && !idLinha.startsWith('new-')) {
+            setLinhasModificadas(prev => new Set(prev).add(idLinha));
+          }
         }
         props.stopEditing();
       };
@@ -441,7 +485,7 @@ export default function LancamentosGridPage() {
   const colDefs: ColDef[] = useMemo(() => [
     { 
       field: 'dataOperacao', 
-      headerName: 'Data',
+      headerName: 'Data de Operação',
       width: 100,
       pinned: 'left',
       editable: true,
@@ -506,7 +550,46 @@ export default function LancamentosGridPage() {
       cellEditorParams: () => ({
         values: categorias.map(c => c.nome)
       }),
-      cellStyle: compactCellStyle
+      cellStyle: compactCellStyle,
+      valueSetter: (params) => {
+        const novaCategoria = params.newValue;
+        params.data.categoria = novaCategoria;
+        
+        // Recalcular o sinal do valor baseado na nova categoria
+        const categoriaSelecionada = categorias.find(c => c.nome === novaCategoria);
+        const isEntrada = categoriaSelecionada?.tipoGrupo === 'E' || categoriaSelecionada?.tipoGrupo === 'Entrada';
+        const valorAtual = Math.abs(params.data.valor || 0);
+        
+        console.log('[CATEGORIA] Nova categoria:', novaCategoria);
+        console.log('[CATEGORIA] Tipo grupo:', categoriaSelecionada?.tipoGrupo);
+        console.log('[CATEGORIA] É entrada?', isEntrada);
+        console.log('[CATEGORIA] Valor atual (abs):', valorAtual);
+        
+        if (valorAtual > 0) {
+          if (isEntrada) {
+            params.data.valor = valorAtual;
+            params.data.entradas = valorAtual;
+            params.data.saidas = 0;
+            console.log('[CATEGORIA] Ajustando para ENTRADA (positivo):', valorAtual);
+          } else {
+            params.data.valor = -valorAtual;
+            params.data.saidas = valorAtual;
+            params.data.entradas = 0;
+            console.log('[CATEGORIA] Ajustando para SAÍDA (negativo):', -valorAtual);
+          }
+          
+          // Forçar atualização da célula de valor para refletir a cor
+          setTimeout(() => {
+            params.api.refreshCells({
+              rowNodes: [params.node],
+              columns: ['valor'],
+              force: true
+            });
+          }, 0);
+        }
+        
+        return true;
+      }
     },
     { 
       field: 'formaOperacao', 
@@ -524,6 +607,16 @@ export default function LancamentosGridPage() {
       headerName: 'Descrição',
       width: 220,
       editable: true,
+      cellEditor: 'agTextCellEditor',
+      cellEditorParams: {
+        maxLength: 500
+      },
+      valueSetter: (params) => {
+        const v = params.newValue != null ? String(params.newValue) : '';
+        if (String(params.data.descricao ?? '') === v) return false;
+        params.data.descricao = v;
+        return true;
+      },
       cellStyle: compactCellStyle
     },
     { 
@@ -542,7 +635,7 @@ export default function LancamentosGridPage() {
           fontSize: '12px',
           textAlign: 'right',
           fontWeight: '500',
-          color: valor >= 0 ? '#28a745' : '#dc3545'
+          color: valor >= 0 ? '#007bff' : '#dc3545'  // Azul para positivo, vermelho para negativo
         };
       },
       valueFormatter: (params) => {
@@ -552,19 +645,37 @@ export default function LancamentosGridPage() {
       },
       valueSetter: (params) => {
         const novoValor = parseFloat(params.newValue) || 0;
-        params.data.valor = novoValor;
+        
         // Determinar se é entrada ou saída pela categoria
         const categoriaSelecionada = categorias.find(c => c.nome === params.data.categoria);
         const isEntrada = categoriaSelecionada?.tipoGrupo === 'E' || categoriaSelecionada?.tipoGrupo === 'Entrada';
+        
+        console.log('[VALOR] Novo valor digitado:', novoValor);
+        console.log('[VALOR] Categoria:', params.data.categoria);
+        console.log('[VALOR] Tipo grupo:', categoriaSelecionada?.tipoGrupo);
+        console.log('[VALOR] É entrada?', isEntrada);
+        
         if (isEntrada) {
           params.data.entradas = Math.abs(novoValor);
           params.data.saidas = 0;
           params.data.valor = Math.abs(novoValor);
+          console.log('[VALOR] Definindo como ENTRADA (positivo):', Math.abs(novoValor));
         } else {
           params.data.saidas = Math.abs(novoValor);
           params.data.entradas = 0;
           params.data.valor = -Math.abs(novoValor);
+          console.log('[VALOR] Definindo como SAÍDA (negativo):', -Math.abs(novoValor));
         }
+        
+        // Forçar atualização da célula para refletir a cor
+        setTimeout(() => {
+          params.api.refreshCells({
+            rowNodes: [params.node],
+            columns: ['valor'],
+            force: true
+          });
+        }, 0);
+        
         return true;
       }
     },
@@ -575,6 +686,94 @@ export default function LancamentosGridPage() {
       editable: true,
       cellEditor: 'agNumberCellEditor',
       cellStyle: compactRightCellStyle
+    },
+    { 
+      field: 'dataVencimento', 
+      headerName: 'Data Vencimento',
+      width: 130,
+      editable: true,
+      cellEditor: 'DataOperacaoEditor',
+      cellEditorPopup: true,
+      cellEditorPopupPosition: 'under',
+      suppressKeyboardEvent: (params) => {
+        const isEditing = params.editing;
+        const key = params.event.key;
+        if (isEditing && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' || key === 'Tab')) {
+          return false;
+        }
+        return isEditing;
+      },
+      cellStyle: compactCellStyle,
+      valueGetter: (params) => {
+        if (!params.data?.dataVencimento) return '';
+        const date = new Date(params.data.dataVencimento);
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+      },
+      valueSetter: (params) => {
+        const newValue = params.newValue;
+        if (!newValue || newValue === params.oldValue) return false;
+        
+        let isoDate = null;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(newValue)) {
+          const [dd, mm, yyyy] = newValue.split('/');
+          isoDate = `${yyyy}-${mm}-${dd}`;
+        } else if (/^\d{4}-\d{2}-\d{2}/.test(newValue)) {
+          isoDate = newValue.slice(0, 10);
+        }
+        
+        if (isoDate) {
+          params.data.dataVencimento = isoDate;
+          return true;
+        }
+        return false;
+      }
+    },
+    { 
+      field: 'dataCompensacao', 
+      headerName: 'Data Compensação',
+      width: 140,
+      editable: true,
+      cellEditor: 'DataOperacaoEditor',
+      cellEditorPopup: true,
+      cellEditorPopupPosition: 'under',
+      suppressKeyboardEvent: (params) => {
+        const isEditing = params.editing;
+        const key = params.event.key;
+        if (isEditing && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' || key === 'Tab')) {
+          return false;
+        }
+        return isEditing;
+      },
+      cellStyle: compactCellStyle,
+      valueGetter: (params) => {
+        if (!params.data?.dataCompensacao) return '';
+        const date = new Date(params.data.dataCompensacao);
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+      },
+      valueSetter: (params) => {
+        const newValue = params.newValue;
+        if (!newValue || newValue === params.oldValue) return false;
+        
+        let isoDate = null;
+        if (/^\d{2}\/\d{2}\/\d{4}$/.test(newValue)) {
+          const [dd, mm, yyyy] = newValue.split('/');
+          isoDate = `${yyyy}-${mm}-${dd}`;
+        } else if (/^\d{4}-\d{2}-\d{2}/.test(newValue)) {
+          isoDate = newValue.slice(0, 10);
+        }
+        
+        if (isoDate) {
+          params.data.dataCompensacao = isoDate;
+          return true;
+        }
+        return false;
+      }
     },
     { 
       field: 'status', 
@@ -644,6 +843,38 @@ export default function LancamentosGridPage() {
     }
   }, [rowData, gridApi, columnApi]);
 
+  useEffect(() => {
+    if (!gridApi) return;
+    const onEditingStopped = (e: any) => {
+      const node = e.node;
+      if (!node?.data?.id) return;
+      const id = String(node.data.id);
+      if (id.startsWith('new-')) return;
+
+      const data = { ...node.data };
+      if (data.dataVencimento && data.dataCompensacao) {
+        data.status = 'Realizado';
+      } else if (data.dataVencimento) {
+        data.status = 'Planejado';
+      } else {
+        data.status = '-';
+      }
+
+      setRowData(prev => prev.map(r => (String(r.id) === id ? { ...data } : r)));
+
+      const orig = lancamentosRef.current.find(l => String(l.id) === id);
+      if (!orig) {
+        setLinhasModificadas(prev => new Set(prev).add(id));
+        return;
+      }
+      if (linhaGridDifereDoServidor(data, orig)) {
+        setLinhasModificadas(prev => new Set(prev).add(id));
+      }
+    };
+    gridApi.addEventListener('cellEditingStopped', onEditingStopped);
+    return () => gridApi.removeEventListener('cellEditingStopped', onEditingStopped);
+  }, [gridApi]);
+
   const handleNovo = () => {
     console.log('[GRID] Botão Novo clicado');
     console.log('[GRID] RowData atual:', rowData.length, 'linhas');
@@ -653,8 +884,7 @@ export default function LancamentosGridPage() {
 
   const handleCellValueChanged = async (params: CellValueChangedEvent) => {
     console.log('[GRID] Célula alterada:', params.colDef.field, params.newValue);
-    
-    // Recalcular status se necessário
+    // Recalcular status se necessário (antes de sincronizar rowData)
     if (params.data.dataVencimento && params.data.dataCompensacao) {
       params.data.status = 'Realizado';
     } else if (params.data.dataVencimento) {
@@ -662,9 +892,16 @@ export default function LancamentosGridPage() {
     } else {
       params.data.status = '-';
     }
-    
-    const id = params.data?.id?.toString();
-    if (id && !id.startsWith('new-') && params.newValue !== params.oldValue) {
+
+    const rowId = params.data?.id;
+    setRowData(prev =>
+      prev.map(r => (String(r.id) === String(rowId) ? { ...params.data } : r))
+    );
+
+    const id = rowId?.toString();
+    const changed =
+      String(params.newValue ?? '') !== String(params.oldValue ?? '');
+    if (id && !id.startsWith('new-') && changed) {
       setLinhasModificadas(prev => new Set(prev).add(id));
     }
   };
@@ -678,7 +915,8 @@ export default function LancamentosGridPage() {
     try {
       const idsModificados = Array.from(linhasModificadas);
       const promessas = idsModificados.map(async (id) => {
-        const linha = rowData.find(r => r.id?.toString() === id);
+        const linhaGrid = gridApi?.getRowNode?.(id)?.data;
+        const linha = linhaGrid || rowData.find(r => r.id?.toString() === id);
         if (!linha) return;
 
         const payload: any = {
@@ -690,7 +928,9 @@ export default function LancamentosGridPage() {
           saidas: linha.saidas || 0,
           formaOperacao: linha.formaOperacao,
           parcelas: linha.parcelas,
-          observacao: linha.observacao
+          observacao: linha.observacao,
+          dataVencimento: linha.dataVencimento || null,
+          dataCompensacao: linha.dataCompensacao || null
         };
 
         if (linha.dataOperacao) {
@@ -756,6 +996,7 @@ export default function LancamentosGridPage() {
       });
 
       await Promise.all(promessas);
+      await carregarDados();
       setLinhasModificadas(new Set());
       alert(`${idsModificados.length} lançamento(s) salvo(s) com sucesso!`);
     } catch (error: any) {
@@ -763,20 +1004,6 @@ export default function LancamentosGridPage() {
       alert(error.message || 'Erro ao salvar alterações');
     }
   };
-
-  const handleCellClicked = (params: any) => {
-    if (!params.colDef?.editable) return;
-    if (params.colDef.field === 'conta') return;
-    if (params.colDef.field === 'categoria') return;
-    if (params.colDef.field === 'formaOperacao') return;
-    const target = params.event?.target as HTMLElement | undefined;
-    if (target && (target.tagName === 'SELECT' || target.tagName === 'OPTION')) return;
-    params.api.startEditingCell({
-      rowIndex: params.rowIndex,
-      colKey: params.colDef.field
-    });
-  };
-
 
   const salvarLancamento = async (dados: any) => {
     try {
@@ -876,6 +1103,12 @@ export default function LancamentosGridPage() {
       }}>
         <h1 style={{ margin: 0, fontSize: '18px', fontWeight: '600' }}>Lançamentos Financeiros</h1>
         <div style={{ display: 'flex', gap: '8px' }}>
+          <button
+            onClick={() => window.location.href = '/'}
+            style={{ backgroundColor: '#0066cc', color: 'white', border: 'none', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer', fontSize: '14px', fontWeight: '500' }}
+          >
+            ← Gestão Financeira
+          </button>
           <button
             onClick={handleSalvar}
             disabled={linhasModificadas.size === 0}
@@ -1035,14 +1268,13 @@ export default function LancamentosGridPage() {
             suppressRowClickSelection={false}
             rowSelection="single"
             onCellValueChanged={handleCellValueChanged}
-            onCellClicked={handleCellClicked}
             enterNavigatesVertically={true}
             enterNavigatesVerticallyAfterEdit={true}
             suppressClickEdit={false}
             singleClickEdit={true}
-            stopEditingWhenCellsLoseFocus={false}
+            stopEditingWhenCellsLoseFocus={true}
             animateRows={false}
-            enableRangeSelection={true}
+            enableRangeSelection={false}
             undoRedoCellEditing={true}
             undoRedoCellEditingLimit={20}
             enableCharts={false}

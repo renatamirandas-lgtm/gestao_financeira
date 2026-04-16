@@ -46,7 +46,7 @@ export default function Home() {
             <Link href="/" style={{ padding: '8px 16px', background: '#0066cc', color: 'white', borderRadius: '4px' }}>
               Início
             </Link>
-            <Link href="/lancar" style={{ padding: '8px 16px', background: '#6c757d', color: 'white', borderRadius: '4px' }}>
+            <Link href="/lancamentos-grid" style={{ padding: '8px 16px', background: '#6c757d', color: 'white', borderRadius: '4px' }}>
               Lançar
             </Link>
             <Link href="/fluxo-caixa" style={{ padding: '8px 16px', background: '#6c757d', color: 'white', borderRadius: '4px' }}>
@@ -95,7 +95,7 @@ export default function Home() {
       <div style={{ padding: '20px', background: 'white', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
         <h2 style={{ marginBottom: '15px' }}>Ações Rápidas</h2>
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <Link href="/lancar" style={{ padding: '12px 24px', background: '#0066cc', color: 'white', borderRadius: '4px', display: 'inline-block' }}>
+          <Link href="/lancamentos-grid" style={{ padding: '12px 24px', background: '#0066cc', color: 'white', borderRadius: '4px', display: 'inline-block' }}>
             ➕ Novo Lançamento
           </Link>
           <Link href="/fluxo-caixa" style={{ padding: '12px 24px', background: '#6c757d', color: 'white', borderRadius: '4px', display: 'inline-block' }}>
