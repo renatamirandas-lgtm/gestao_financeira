@@ -21,3 +21,15 @@ Colocar filtro para Pesquisa de Pessoas
 
 Campo data na grid
 Permitir digitar a data
+
+
+
+16/04/26
+Na tela principal, quando clica em lançar, chama a grid lançamentos
+Na tela grid, coloquei botão voltar para gestão 
+
+Ajuste no autocomplete do nome
+Ajuste para gravar novos nomes
+
+21/05
+

@@ -6,7 +6,10 @@ export interface Lancamento {
   dataOperacao: Date | string;
   clienteFornecedor: string;
   descricao: string;
-  parcelas: number | string;
+  /** @deprecated Use numeroParcela e totalParcelas; mantido para compatibilidade na API */
+  parcelas?: number | string;
+  numeroParcela?: number;
+  totalParcelas?: number;
   categoria: string;
   entradas: number;
   saidas: number;
@@ -90,5 +93,33 @@ export interface Agencia {
   bancoId: number;
   numero?: string;
   nome: string;
+}
+
+export interface CategoriaOrcamento {
+  id?: number;
+  categoriaId: number;
+  categoriaNome?: string;
+  mes: number;
+  ano: number;
+  valorPrevisto: number;
+}
+
+export interface OrcadoRealizadoItem {
+  categoriaId: number;
+  categoriaNome: string;
+  valorPrevisto: number;
+  totalGasto: number;
+  valorRestante: number;
+  percentualAtingido: number;
+}
+
+export interface OrcadoRealizadoDashboard {
+  mes: number;
+  ano: number;
+  itens: OrcadoRealizadoItem[];
+  totalOrcado: number;
+  totalGasto: number;
+  saldoDisponivel: number;
+  percentualGeralConsumido: number;
 }
 

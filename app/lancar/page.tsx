@@ -361,7 +361,7 @@ export default function LancarPage() {
               <label style={{ display: 'block', marginBottom: '5px', fontSize: '14px', fontWeight: '500' }}>Data Operação *</label>
               <input
                 type="date"
-                value={formulario.dataOperacao || ''}
+                value={formulario.dataOperacao ? new Date(formulario.dataOperacao).toISOString().split('T')[0] : ''}
                 onChange={(e) => setFormulario({ ...formulario, dataOperacao: e.target.value })}
                 required
                 style={{ width: '100%' }}

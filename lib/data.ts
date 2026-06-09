@@ -1,7 +1,10 @@
 // Versão com banco de dados PostgreSQL (Neon) - Usando tabelas existentes
 
 import pool from './db';
-import { Lancamento, Banco, FormaPagamento, FluxoCaixa, ResultadoMensal, GrupoCategoria, Categoria, Pessoa, Agencia } from '@/types';
+import { Lancamento, Banco, FormaPagamento, FluxoCaixa, ResultadoMensal, GrupoCategoria, Categoria, Pessoa, Agencia, CategoriaOrcamento, OrcadoRealizadoDashboard, OrcadoRealizadoItem } from '@/types';
+import { formatParcelaExibicao, normalizarParcelasCampos } from './parcelas';
+
+export { formatParcelaExibicao, normalizarParcelasCampos } from './parcelas';
 
 // Funções auxiliares para cálculos (mantidas iguais)
 
@@ -122,12 +125,87 @@ function getArrayValue(value: any): any {
   return value;
 }
 
+let parcelaColunasProntas = false;
+let categoriaOrcamentoTabelaPronta = false;
+
+async function ensureParcelaColunas() {
+  if (parcelaColunasProntas) return;
+  await pool.query(`
+    ALTER TABLE lancamento ADD COLUMN IF NOT EXISTS nr_parcela INTEGER DEFAULT 1;
+    ALTER TABLE lancamento ADD COLUMN IF NOT EXISTS qt_total_parcelas INTEGER DEFAULT 1;
+  `);
+  parcelaColunasProntas = true;
+}
+
+async function ensureCategoriaOrcamentoTable() {
+  if (categoriaOrcamentoTabelaPronta) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS categoria_orcamento (
+      id SERIAL PRIMARY KEY,
+      categoria_id INTEGER NOT NULL REFERENCES categoria(id_categoria) ON DELETE CASCADE,
+      mes INTEGER NOT NULL CHECK (mes >= 1 AND mes <= 12),
+      ano INTEGER NOT NULL CHECK (ano >= 2000 AND ano <= 2100),
+      valor_previsto NUMERIC(15, 2) NOT NULL DEFAULT 0,
+      UNIQUE (categoria_id, mes, ano)
+    );
+    CREATE INDEX IF NOT EXISTS idx_categoria_orcamento_periodo ON categoria_orcamento (ano, mes);
+  `);
+  categoriaOrcamentoTabelaPronta = true;
+}
+
+function dataNoPeriodo(data: Date | string | undefined, mes: number, ano: number): boolean {
+  if (!data) return false;
+  const d = new Date(data);
+  if (isNaN(d.getTime())) return false;
+  return d.getMonth() + 1 === mes && d.getFullYear() === ano;
+}
+
+export function corPercentualOrcamento(percentual: number): string {
+  if (percentual >= 100) return '#dc3545';
+  if (percentual >= 80) return '#ffc107';
+  return '#28a745';
+}
+
+function lerParcelasDoRegistro(row: any): { numeroParcela: number; totalParcelas: number } {
+  const nr =
+    row.numeroParcela ?? row.nr_parcela;
+  const qt =
+    row.totalParcelas ?? row.qt_total_parcelas;
+  if (nr != null && qt != null) {
+    return {
+      numeroParcela: Math.max(1, Number(nr) || 1),
+      totalParcelas: Math.max(1, Number(qt) || 1)
+    };
+  }
+  const parcelasRaw = getArrayValue(row.parcelas);
+  if (parcelasRaw != null && parcelasRaw !== '') {
+    const s = String(parcelasRaw).trim();
+    if (s.includes('/')) {
+      const [a, b] = s.split('/').map((x) => parseInt(x.trim(), 10));
+      return { numeroParcela: Math.max(1, a || 1), totalParcelas: Math.max(1, b || 1) };
+    }
+    const n = parseInt(s, 10);
+    if (!isNaN(n) && n > 0) {
+      return { numeroParcela: 1, totalParcelas: n };
+    }
+  }
+  return { numeroParcela: 1, totalParcelas: 1 };
+}
+
+function formatQtParcelasLegacy(numero: number, total: number): string {
+  const n = Math.max(1, numero);
+  const t = Math.max(1, total);
+  if (t <= 1) return `{1}`;
+  return `{"${n}/${t}"}`;
+}
+
 // API de dados usando PostgreSQL com tabelas existentes
 
 export const DataService = {
   // Lançamentos
   getLancamentos: async (): Promise<(Lancamento & { categoriaNome?: string; grupoCategoriaTipo?: string })[]> => {
     try {
+      await ensureParcelaColunas();
       // Primeiro vamos buscar apenas os lançamentos com JOINs para dados relacionados
       const lancamentosResult = await pool.query(`
         SELECT 
@@ -137,6 +215,8 @@ export const DataService = {
           l.id_pessoa as "clienteFornecedorId",
           l.ds_lancamento as descricao,
           l.qt_parcelas as parcelas,
+          l.nr_parcela as "numeroParcela",
+          l.qt_total_parcelas as "totalParcelas",
           l.ds_categoria as categoria,
           l.vl_lancamento as "vlLancamento",
           l.dt_vencimento as "dataVencimento",
@@ -214,9 +294,7 @@ export const DataService = {
           const categoriaNome = String(getArrayValue(row.categoria) || '').trim();
           const tipoGrupo = mapaCategorias.get(categoriaNome) || 'Saída'; // Default para Saída
           
-          // Processar parcelas
-          const parcelasRaw = getArrayValue(row.parcelas);
-          const parcelas = parcelasRaw ? parseInt(String(parcelasRaw)) : 1;
+          const { numeroParcela, totalParcelas } = lerParcelasDoRegistro(row);
           
           const lanc: any = {
             id: String(row.id || ''),
@@ -225,7 +303,9 @@ export const DataService = {
             clienteFornecedorId: row.clienteFornecedorId || null,
             clienteFornecedor: String(getArrayValue(row.pessoaNome) || '').trim(),
             descricao: String(getArrayValue(row.descricao) || '').trim(),
-            parcelas: isNaN(parcelas) ? 1 : parcelas,
+            numeroParcela,
+            totalParcelas,
+            parcelas: formatParcelaExibicao(numeroParcela, totalParcelas),
             categoria: categoriaNome,
             valor: valorLancamento,
             entradas: valorLancamento > 0 ? valorLancamento : 0,
@@ -274,6 +354,8 @@ export const DataService = {
   
   addLancamento: async (lancamento: Lancamento): Promise<Lancamento> => {
     try {
+      await ensureParcelaColunas();
+      const { numeroParcela, totalParcelas } = normalizarParcelasCampos(lancamento);
       // Resolver/garantir pessoa (cliente/fornecedor)
       let pessoaId: number | null = (lancamento as any).clienteFornecedorId || null;
       if (!pessoaId && lancamento.clienteFornecedor && lancamento.clienteFornecedor.trim() !== '') {
@@ -388,15 +470,17 @@ export const DataService = {
       // Inserir campos (FKs podem ser NULL por enquanto até ter dados cadastrados)
       const result = await pool.query(`
         INSERT INTO lancamento (
-          dt_operacao, ds_lancamento, qt_parcelas,
+          dt_operacao, ds_lancamento, qt_parcelas, nr_parcela, qt_total_parcelas,
           vl_lancamento, ds_categoria, dt_vencimento, dt_compensacao,
           id_conta_corr, id_pessoa, id_categoria, id_tp_operacao
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING id_lancamento
       `, [
         lancamento.dataOperacao,
         lancamento.descricao ? `{${lancamento.descricao.trim()}}` : null,
-        `{${lancamento.parcelas || 1}}`,
+        formatQtParcelasLegacy(numeroParcela, totalParcelas),
+        numeroParcela,
+        totalParcelas,
         `{${valorLancamento}}`,
         lancamento.categoria && lancamento.categoria.trim() !== '' ? `{${lancamento.categoria.trim()}}` : null,
         lancamento.dataVencimento || null,
@@ -410,7 +494,14 @@ export const DataService = {
       const id = result.rows[0].id_lancamento.toString();
       const status = calcularStatus(lancamento);
       
-      return { ...lancamento, id, status };
+      return {
+        ...lancamento,
+        id,
+        status,
+        numeroParcela,
+        totalParcelas,
+        parcelas: formatParcelaExibicao(numeroParcela, totalParcelas)
+      };
     } catch (error: any) {
       console.error('Erro ao adicionar lançamento:', error);
       if (error.message) {
@@ -422,6 +513,13 @@ export const DataService = {
   
   updateLancamento: async (id: string, lancamento: Partial<Lancamento>): Promise<Lancamento | null> => {
     try {
+      await ensureParcelaColunas();
+      const parcelasAtualizadas =
+        lancamento.numeroParcela != null ||
+        lancamento.totalParcelas != null ||
+        lancamento.parcelas != null
+          ? normalizarParcelasCampos(lancamento)
+          : null;
       // Buscar lançamento existente
       const existing = await pool.query(
         'SELECT * FROM lancamento WHERE id_lancamento = $1',
@@ -560,19 +658,28 @@ export const DataService = {
           dt_operacao = COALESCE($2, dt_operacao),
           ds_lancamento = COALESCE($3, ds_lancamento),
           qt_parcelas = COALESCE($4, qt_parcelas),
-          vl_lancamento = COALESCE($5, vl_lancamento),
-          ds_categoria = COALESCE($6, ds_categoria),
-          dt_vencimento = $7,
-          dt_compensacao = $8,
-          id_pessoa = COALESCE($9, id_pessoa),
-          id_conta_corr = COALESCE($10, id_conta_corr),
-          id_tp_operacao = COALESCE($11, id_tp_operacao)
+          nr_parcela = COALESCE($5, nr_parcela),
+          qt_total_parcelas = COALESCE($6, qt_total_parcelas),
+          vl_lancamento = COALESCE($7, vl_lancamento),
+          ds_categoria = COALESCE($8, ds_categoria),
+          dt_vencimento = $9,
+          dt_compensacao = $10,
+          id_pessoa = COALESCE($11, id_pessoa),
+          id_conta_corr = COALESCE($12, id_conta_corr),
+          id_tp_operacao = COALESCE($13, id_tp_operacao)
         WHERE id_lancamento = $1
       `, [
         parseInt(id),
         lancamento.dataOperacao || existingRow.dt_operacao,
         lancamento.descricao ? `{${lancamento.descricao}}` : existingRow.ds_lancamento,
-        lancamento.parcelas ? `{${lancamento.parcelas}}` : existingRow.qt_parcelas,
+        parcelasAtualizadas
+          ? formatQtParcelasLegacy(
+              parcelasAtualizadas.numeroParcela,
+              parcelasAtualizadas.totalParcelas
+            )
+          : existingRow.qt_parcelas,
+        parcelasAtualizadas?.numeroParcela ?? existingRow.nr_parcela,
+        parcelasAtualizadas?.totalParcelas ?? existingRow.qt_total_parcelas,
         valorLancamento !== undefined ? `{${valorLancamento}}` : existingRow.vl_lancamento,
         lancamento.categoria ? `{${lancamento.categoria}}` : existingRow.ds_categoria,
         lancamento.dataVencimento || existingRow.dt_vencimento,
@@ -591,16 +698,15 @@ export const DataService = {
   },
   
   deleteLancamento: async (id: string): Promise<boolean> => {
-    try {
-      const result = await pool.query(
-        'DELETE FROM lancamento WHERE id_lancamento = $1',
-        [parseInt(id)]
-      );
-      return result.rowCount ? result.rowCount > 0 : false;
-    } catch (error) {
-      console.error('Erro ao excluir lançamento:', error);
-      return false;
+    const idNum = parseInt(id, 10);
+    if (!Number.isFinite(idNum)) {
+      throw new Error('ID do lançamento inválido');
     }
+    const result = await pool.query(
+      'DELETE FROM lancamento WHERE id_lancamento = $1',
+      [idNum]
+    );
+    return result.rowCount ? result.rowCount > 0 : false;
   },
   
   // Bancos
@@ -915,7 +1021,8 @@ export const DataService = {
       return result.rows
         .map(row => ({
           id: row.id,
-          nome: getArrayValue(row.nome) || ''
+          nome: getArrayValue(row.nome) || '',
+          tipoPessoa: 'Física' as const
         }))
         .filter(p => p.nome);
     } catch (error) {
@@ -1164,5 +1271,181 @@ export const DataService = {
       console.error('Erro ao excluir agência:', error);
       return false;
     }
+  },
+
+  // Orçamento por categoria
+  getCategoriaOrcamentos: async (mes: number, ano: number, categoriaId?: number): Promise<CategoriaOrcamento[]> => {
+    try {
+      await ensureCategoriaOrcamentoTable();
+      const params: (number | string)[] = [mes, ano];
+      let filtroCategoria = '';
+      if (categoriaId) {
+        filtroCategoria = ' AND co.categoria_id = $3';
+        params.push(categoriaId);
+      }
+      const result = await pool.query(
+        `
+        SELECT
+          co.id,
+          co.categoria_id as "categoriaId",
+          c.no_categoria as "categoriaNome",
+          co.mes,
+          co.ano,
+          co.valor_previsto as "valorPrevisto"
+        FROM categoria_orcamento co
+        JOIN categoria c ON c.id_categoria = co.categoria_id
+        WHERE co.mes = $1 AND co.ano = $2
+        ${filtroCategoria}
+        ORDER BY c.no_categoria
+        `,
+        params
+      );
+      return result.rows.map(row => ({
+        id: row.id,
+        categoriaId: row.categoriaId,
+        categoriaNome: row.categoriaNome || '',
+        mes: row.mes,
+        ano: row.ano,
+        valorPrevisto: parseFloat(row.valorPrevisto) || 0
+      }));
+    } catch (error) {
+      console.error('Erro ao buscar orçamentos:', error);
+      return [];
+    }
+  },
+
+  upsertCategoriaOrcamento: async (orcamento: Omit<CategoriaOrcamento, 'id' | 'categoriaNome'>): Promise<CategoriaOrcamento> => {
+    try {
+      await ensureCategoriaOrcamentoTable();
+      const valor = parseFloat(String(orcamento.valorPrevisto)) || 0;
+      const result = await pool.query(
+        `
+        INSERT INTO categoria_orcamento (categoria_id, mes, ano, valor_previsto)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (categoria_id, mes, ano)
+        DO UPDATE SET valor_previsto = EXCLUDED.valor_previsto
+        RETURNING id, categoria_id, mes, ano, valor_previsto
+        `,
+        [orcamento.categoriaId, orcamento.mes, orcamento.ano, valor]
+      );
+      const row = result.rows[0];
+      const catResult = await pool.query(
+        'SELECT no_categoria FROM categoria WHERE id_categoria = $1',
+        [row.categoria_id]
+      );
+      return {
+        id: row.id,
+        categoriaId: row.categoria_id,
+        categoriaNome: catResult.rows[0]?.no_categoria || '',
+        mes: row.mes,
+        ano: row.ano,
+        valorPrevisto: parseFloat(row.valor_previsto) || 0
+      };
+    } catch (error: any) {
+      console.error('Erro ao salvar orçamento:', error);
+      throw new Error(error.message || 'Erro ao salvar orçamento');
+    }
+  },
+
+  deleteCategoriaOrcamento: async (id: number): Promise<boolean> => {
+    try {
+      await ensureCategoriaOrcamentoTable();
+      const result = await pool.query(
+        'DELETE FROM categoria_orcamento WHERE id = $1',
+        [id]
+      );
+      return result.rowCount ? result.rowCount > 0 : false;
+    } catch (error) {
+      console.error('Erro ao excluir orçamento:', error);
+      return false;
+    }
+  },
+
+  getOrcadoRealizado: async (filtros: {
+    mes: number;
+    ano: number;
+    categoriaId?: number;
+    conta?: string;
+  }): Promise<OrcadoRealizadoDashboard> => {
+    const { mes, ano, categoriaId, conta } = filtros;
+    await ensureCategoriaOrcamentoTable();
+
+    const categorias = await DataService.getCategorias();
+    const categoriasDespesa = categorias.filter(c => c.tipoGrupo === 'S');
+    const mapaNomeParaId = new Map(categoriasDespesa.map(c => [c.nome.trim().toLowerCase(), c.id!]));
+
+    const orcamentos = await DataService.getCategoriaOrcamentos(mes, ano, categoriaId);
+    const orcamentoPorCategoriaId = new Map(orcamentos.map(o => [o.categoriaId, o]));
+
+    const lancamentos = await DataService.getLancamentos();
+    const gastoPorCategoriaId = new Map<number, number>();
+
+    for (const lanc of lancamentos) {
+      if (conta && conta !== 'TODAS AS CONTAS' && lanc.conta !== conta) continue;
+      if (calcularStatus(lanc) !== 'Realizado') continue;
+
+      const dataRef = lanc.dataCompensacao || lanc.dataOperacao;
+      if (!dataNoPeriodo(dataRef, mes, ano)) continue;
+
+      const nomeCat = (lanc.categoria || '').trim().toLowerCase();
+      if (!nomeCat) continue;
+
+      const catId = mapaNomeParaId.get(nomeCat);
+      if (!catId) continue;
+      if (categoriaId && catId !== categoriaId) continue;
+
+      const gasto = lanc.saidas || 0;
+      if (gasto <= 0) continue;
+
+      gastoPorCategoriaId.set(catId, (gastoPorCategoriaId.get(catId) || 0) + gasto);
+    }
+
+    const idsExibir = new Set<number>();
+    for (const o of orcamentos) idsExibir.add(o.categoriaId);
+    for (const id of gastoPorCategoriaId.keys()) idsExibir.add(id);
+
+    if (categoriaId) {
+      idsExibir.clear();
+      idsExibir.add(categoriaId);
+    }
+
+    const itens: OrcadoRealizadoItem[] = Array.from(idsExibir)
+      .map(id => {
+        const cat = categoriasDespesa.find(c => c.id === id);
+        const orc = orcamentoPorCategoriaId.get(id);
+        const valorPrevisto = orc?.valorPrevisto ?? 0;
+        const totalGasto = gastoPorCategoriaId.get(id) || 0;
+        const valorRestante = valorPrevisto - totalGasto;
+        const percentualAtingido = valorPrevisto > 0
+          ? (totalGasto / valorPrevisto) * 100
+          : (totalGasto > 0 ? 100 : 0);
+
+        return {
+          categoriaId: id,
+          categoriaNome: cat?.nome || orc?.categoriaNome || `Categoria ${id}`,
+          valorPrevisto,
+          totalGasto,
+          valorRestante,
+          percentualAtingido
+        };
+      })
+      .sort((a, b) => a.categoriaNome.localeCompare(b.categoriaNome, 'pt-BR'));
+
+    const totalOrcado = itens.reduce((s, i) => s + i.valorPrevisto, 0);
+    const totalGasto = itens.reduce((s, i) => s + i.totalGasto, 0);
+    const saldoDisponivel = totalOrcado - totalGasto;
+    const percentualGeralConsumido = totalOrcado > 0
+      ? (totalGasto / totalOrcado) * 100
+      : (totalGasto > 0 ? 100 : 0);
+
+    return {
+      mes,
+      ano,
+      itens,
+      totalOrcado,
+      totalGasto,
+      saldoDisponivel,
+      percentualGeralConsumido
+    };
   }
 };

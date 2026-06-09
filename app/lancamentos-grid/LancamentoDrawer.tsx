@@ -361,7 +361,7 @@ export default function LancamentoDrawer({ open, onClose, lancamento }: Lancamen
               <input
                 type="date"
                 value={formulario.dataVencimento?.toString().split('T')[0] || ''}
-                onChange={(e) => setFormulario({ ...formulario, dataVencimento: e.target.value || null })}
+                onChange={(e) => setFormulario({ ...formulario, dataVencimento: e.target.value || undefined })}
                 style={{
                   width: '100%',
                   padding: '8px',
@@ -379,7 +379,7 @@ export default function LancamentoDrawer({ open, onClose, lancamento }: Lancamen
               <input
                 type="date"
                 value={formulario.dataCompensacao?.toString().split('T')[0] || ''}
-                onChange={(e) => setFormulario({ ...formulario, dataCompensacao: e.target.value || null })}
+                onChange={(e) => setFormulario({ ...formulario, dataCompensacao: e.target.value || undefined })}
                 style={{
                   width: '100%',
                   padding: '8px',

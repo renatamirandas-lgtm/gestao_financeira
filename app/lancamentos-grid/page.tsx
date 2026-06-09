@@ -1,12 +1,21 @@
 'use client';
 
-import { useState, useEffect, useMemo, forwardRef, useImperativeHandle, useRef } from 'react';
+import { useState, useEffect, useMemo, forwardRef, useImperativeHandle, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { AgGridReact } from 'ag-grid-react';
-import { ColDef, GridReadyEvent, CellValueChangedEvent, ModuleRegistry, ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule } from 'ag-grid-community';
+import { ColDef, GridReadyEvent, CellValueChangedEvent, ModuleRegistry, ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule, RowSelectionModule } from 'ag-grid-community';
 import { Lancamento } from '@/types';
+import { formatParcelaExibicao, normalizarParcelasCampos, totalParcelasParaGerar } from '@/lib/parcelas';
 import LancamentoDrawer from './LancamentoDrawer';
 
-ModuleRegistry.registerModules([ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule]);
+ModuleRegistry.registerModules([
+  ClientSideRowModelModule,
+  TextEditorModule,
+  NumberEditorModule,
+  DateEditorModule,
+  SelectEditorModule,
+  RowSelectionModule
+]);
 
 function linhaGridDifereDoServidor(row: any, srv: Lancamento): boolean {
   const ts = (v: any) => (v == null ? '' : String(v)).trim();
@@ -34,7 +43,8 @@ function linhaGridDifereDoServidor(row: any, srv: Lancamento): boolean {
   if (tn(row.entradas) !== tn(srv.entradas)) return true;
   if (tn(row.saidas) !== tn(srv.saidas)) return true;
   if (ts(row.formaOperacao) !== ts(srv.formaOperacao)) return true;
-  if (tn(row.parcelas) !== tn(srv.parcelas)) return true;
+  if (tn((row as any).numeroParcela) !== tn((srv as any).numeroParcela)) return true;
+  if (tn((row as any).totalParcelas) !== tn((srv as any).totalParcelas)) return true;
   if (ts(row.observacao) !== ts((srv as any).observacao)) return true;
   if (ts(row.clienteFornecedor) !== ts(srv.clienteFornecedor)) return true;
   if (String((row as any).clienteFornecedorId ?? '') !== String((srv as any).clienteFornecedorId ?? '')) return true;
@@ -42,6 +52,62 @@ function linhaGridDifereDoServidor(row: any, srv: Lancamento): boolean {
   if (dIso(row.dataCompensacao) !== dIso(srv.dataCompensacao)) return true;
   if (normOp(row.dataOperacao) !== normOp(srv.dataOperacao)) return true;
   return false;
+}
+
+function calcularStatusGrid(l: { dataVencimento?: any; dataCompensacao?: any; status?: string }): 'Realizado' | 'Planejado' | '-' {
+  if (l.status === 'Realizado' || l.status === 'Planejado') return l.status;
+  if (!l.dataVencimento) return '-';
+  const dataVenc = new Date(l.dataVencimento);
+  if (isNaN(dataVenc.getTime())) return '-';
+  if (l.dataCompensacao) return 'Realizado';
+  return 'Planejado';
+}
+
+function tsData(val: any): number {
+  if (val == null || val === '') return Number.MAX_SAFE_INTEGER;
+  const s = String(val).trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split('/');
+    return new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10)).getTime();
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const [yyyy, mm, dd] = s.slice(0, 10).split('-');
+    return new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10)).getTime();
+  }
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? Number.MAX_SAFE_INTEGER : d.getTime();
+}
+
+function parseDataParaDate(val: any): Date | null {
+  if (val == null || val === '') return null;
+  const s = String(val).trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+    const [dd, mm, yyyy] = s.split('/');
+    const d = new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const [yyyy, mm, dd] = s.slice(0, 10).split('-');
+    const d = new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function dataParaIso(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function vencimentoComMesesAdicionados(dataBase: Date, mesesAdicionar: number): string {
+  const diaPreferido = dataBase.getDate();
+  const alvo = new Date(dataBase.getFullYear(), dataBase.getMonth() + mesesAdicionar, 1);
+  const ultimoDia = new Date(alvo.getFullYear(), alvo.getMonth() + 1, 0).getDate();
+  alvo.setDate(Math.min(diaPreferido, ultimoDia));
+  return dataParaIso(alvo);
 }
 
 export default function LancamentosGridPage() {
@@ -55,11 +121,17 @@ export default function LancamentosGridPage() {
     lancamentosRef.current = lancamentos;
   }, [lancamentos]);
 
+  /** Linhas novas ainda não salvas no servidor (id `new-...`); sempre no final da grid */
+  const [linhasRascunho, setLinhasRascunho] = useState<any[]>([]);
+
   // Filtros
   const [filtroConta, setFiltroConta] = useState<string>('');
   const [filtroMes, setFiltroMes] = useState<string>('');
   const [filtroCategoria, setFiltroCategoria] = useState<string>('');
   const [filtroBusca, setFiltroBusca] = useState<string>('');
+  const [filtroSituacao, setFiltroSituacao] = useState<'Planejado' | 'Realizado' | ''>('');
+  const scrollGridParaRef = useRef<'fim' | null>(null);
+  const scrollParaLinhaRef = useRef<string | null>(null);
   
   // Dados para filtros
   const [bancos, setBancos] = useState<Array<{ id: number; nome: string }>>([]);
@@ -71,7 +143,9 @@ export default function LancamentosGridPage() {
   const [resumo, setResumo] = useState({
     saldo: 0,
     entradas: 0,
-    saidas: 0
+    saidas: 0,
+    saldoRealizado: 0,
+    saldoFuturo: 0
   });
 
   useEffect(() => {
@@ -80,7 +154,7 @@ export default function LancamentosGridPage() {
 
   useEffect(() => {
     aplicarFiltros();
-  }, [lancamentos, filtroConta, filtroMes, filtroCategoria, filtroBusca]);
+  }, [lancamentos, filtroConta, filtroMes, filtroCategoria, filtroBusca, filtroSituacao, linhasRascunho]);
 
   const carregarDados = async () => {
     try {
@@ -117,33 +191,42 @@ export default function LancamentosGridPage() {
     }
   };
 
-  const aplicarFiltros = (dadosBase: Lancamento[] = lancamentos) => {
-    let filtrados = [...dadosBase];
-    
-    if (filtroConta) {
-      filtrados = filtrados.filter(l => l.conta === filtroConta);
-    }
-    
-    if (filtroMes) {
-      const [ano, mes] = filtroMes.split('-');
-      filtrados = filtrados.filter(l => {
-        if (!l.dataOperacao) return false;
-        const data = new Date(l.dataOperacao);
-        return data.getFullYear() === parseInt(ano) && 
-               (data.getMonth() + 1) === parseInt(mes);
-      });
-    }
-    
-    if (filtroCategoria) {
-      filtrados = filtrados.filter(l => l.categoria === filtroCategoria);
-    }
-    
+  const passaFiltrosLinha = (l: any, opts?: { ignorarSituacao?: boolean }) => {
+    if (filtroConta && l.conta !== filtroConta) return false;
+    if (filtroCategoria && l.categoria !== filtroCategoria) return false;
     if (filtroBusca) {
       const busca = filtroBusca.toLowerCase();
-      filtrados = filtrados.filter(l => 
-        (l.descricao?.toLowerCase().includes(busca) || false) ||
-        (l.clienteFornecedor?.toLowerCase().includes(busca) || false)
-      );
+      const desc = (l.descricao || '').toLowerCase();
+      const cliente = (l.clienteFornecedor || '').toLowerCase();
+      if (!desc.includes(busca) && !cliente.includes(busca)) return false;
+    }
+    if (filtroMes) {
+      const [ano, mes] = filtroMes.split('-');
+      const raw = (l.dataOperacao || '').toString();
+      let data: Date | null = null;
+      if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+        const [dd, mm, yyyy] = raw.split('/');
+        data = new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10));
+      } else if (raw) {
+        data = new Date(raw);
+      }
+      if (!data || isNaN(data.getTime())) return false;
+      if (data.getFullYear() !== parseInt(ano, 10) || data.getMonth() + 1 !== parseInt(mes, 10)) return false;
+    }
+    if (!opts?.ignorarSituacao && filtroSituacao) {
+      const status = calcularStatusGrid(l);
+      if (status !== filtroSituacao) return false;
+    }
+    return true;
+  };
+
+  const aplicarFiltros = (dadosBase: Lancamento[] = lancamentos) => {
+    let filtrados = [...dadosBase].filter(l => passaFiltrosLinha(l));
+
+    if (filtroSituacao === 'Planejado') {
+      filtrados.sort((a, b) => tsData(a.dataVencimento) - tsData(b.dataVencimento));
+    } else if (filtroSituacao === 'Realizado') {
+      filtrados.sort((a, b) => tsData(a.dataCompensacao) - tsData(b.dataCompensacao));
     }
     
     // Preparar dados para o grid
@@ -176,7 +259,9 @@ export default function LancamentosGridPage() {
         entradas,
         saidas,
         formaOperacao: l.formaOperacao || '',
-        parcelas: l.parcelas || 1,
+        numeroParcela: (l as any).numeroParcela ?? 1,
+        totalParcelas: (l as any).totalParcelas ?? 1,
+        parcelas: formatParcelaExibicao((l as any).numeroParcela, (l as any).totalParcelas),
         dataVencimento: l.dataVencimento || null,
         dataVencimentoFormatada: l.dataVencimento ? new Date(l.dataVencimento).toLocaleDateString('pt-BR') : '',
         dataCompensacao: l.dataCompensacao || null,
@@ -191,15 +276,35 @@ export default function LancamentosGridPage() {
     if (dadosGrid.length > 0) {
       console.log('[GRID] Primeiro lançamento:', dadosGrid[0]);
     }
-    setRowData(dadosGrid);
+    const rascunhosVisiveis = linhasRascunho.filter(r => passaFiltrosLinha(r, { ignorarSituacao: true }));
+    const merged = [...dadosGrid, ...rascunhosVisiveis];
+    setRowData(merged);
     
-    // Calcular resumo
-    const totalEntradas = filtrados.reduce((sum, l) => sum + (l.entradas || 0), 0);
-    const totalSaidas = filtrados.reduce((sum, l) => sum + (l.saidas || 0), 0);
+    const totalEntradas = merged.reduce((sum, l) => sum + (Number(l.entradas) || 0), 0);
+    const totalSaidas = merged.reduce((sum, l) => sum + (Number(l.saidas) || 0), 0);
+    const saldoFiltro = totalEntradas - totalSaidas;
+
+    const saldoLinha = (l: Lancamento) => (Number(l.entradas) || 0) - (Number(l.saidas) || 0);
+    const saldoRealizado = dadosBase
+      .filter(l => passaFiltrosLinha(l, { ignorarSituacao: true }) && calcularStatusGrid(l) === 'Realizado')
+      .reduce((sum, l) => sum + saldoLinha(l), 0);
+    const saldoPlanejadoTotal = dadosBase
+      .filter(l => passaFiltrosLinha(l, { ignorarSituacao: true }) && calcularStatusGrid(l) === 'Planejado')
+      .reduce((sum, l) => sum + saldoLinha(l), 0);
+
+    const saldoFuturo =
+      filtroSituacao === 'Planejado'
+        ? saldoRealizado + saldoFiltro
+        : filtroSituacao === 'Realizado'
+          ? saldoRealizado
+          : saldoRealizado + saldoPlanejadoTotal;
+
     setResumo({
-      saldo: totalEntradas - totalSaidas,
+      saldo: saldoFiltro,
       entradas: totalEntradas,
-      saidas: totalSaidas
+      saidas: totalSaidas,
+      saldoRealizado,
+      saldoFuturo
     });
   };
 
@@ -213,14 +318,49 @@ export default function LancamentosGridPage() {
       const [valor, setValor] = useState<string>(props.value || '');
       const [sugestoes, setSugestoes] = useState<Array<{ id: number; nome: string }>>([]);
       const [mostrarSugestoes, setMostrarSugestoes] = useState(false);
+      const [posDropdown, setPosDropdown] = useState<{ top: number; left: number; width: number } | null>(null);
       const inputRef = useRef<HTMLInputElement | null>(null);
       const debounceRef = useRef<any>(null);
       const requestIdRef = useRef<number>(0);
+      const valorCommitRef = useRef<string>(props.value || '');
+      const sugestoesRef = useRef<Array<{ id: number; nome: string }>>([]);
+      const selecionandoRef = useRef(false);
+
+      const aplicarPessoaNaLinha = (pessoa: { id: number; nome: string }) => {
+        valorCommitRef.current = pessoa.nome;
+        setValor(pessoa.nome);
+        if (props.node?.data) {
+          props.node.data.clienteFornecedorId = pessoa.id;
+        }
+        if (props.node && props.column) {
+          props.node.setDataValue(props.column.getColId(), pessoa.nome);
+        }
+        const idLinha = props.node?.data?.id?.toString();
+        if (idLinha && !idLinha.startsWith('new-')) {
+          setLinhasModificadas(prev => new Set(prev).add(idLinha));
+        }
+      };
+
+      const resolverPessoaExistente = (
+        texto: string,
+        lista: Array<{ id: number; nome: string }>
+      ): { id: number; nome: string } | null => {
+        const termo = texto.trim().toLowerCase();
+        if (!termo) return null;
+        const exata = lista.find(p => p.nome.trim().toLowerCase() === termo);
+        if (exata) return exata;
+        const exataCache = pessoas.find(p => p.nome.trim().toLowerCase() === termo);
+        if (exataCache) return exataCache;
+        const porPrefixo = lista.filter(p => p.nome.trim().toLowerCase().startsWith(termo));
+        if (porPrefixo.length === 1) return porPrefixo[0];
+        return null;
+      };
 
       const buscarPessoas = (texto: string) => {
         const termo = texto.trim();
         if (!termo) {
           setSugestoes([]);
+          sugestoesRef.current = [];
           setMostrarSugestoes(false);
           return;
         }
@@ -232,38 +372,122 @@ export default function LancamentosGridPage() {
             if (!response.ok) return;
             const data = await response.json();
             if (requestId !== requestIdRef.current) return;
-            setSugestoes(Array.isArray(data) ? data : []);
-            setMostrarSugestoes(Array.isArray(data) && data.length > 0);
+            const lista = Array.isArray(data) ? data : [];
+            setSugestoes(lista);
+            sugestoesRef.current = lista;
+            setMostrarSugestoes(lista.length > 0);
           } catch {
             setSugestoes([]);
+            sugestoesRef.current = [];
             setMostrarSugestoes(false);
           }
         }, 300);
       };
 
-      const selecionarPessoa = (pessoa: { id: number; nome: string }) => {
-        setValor(pessoa.nome);
-        setSugestoes([]);
-        setMostrarSugestoes(false);
-        if (props.node && props.column) {
-          props.node.setDataValue(props.column.getColId(), pessoa.nome);
-          props.node.data.clienteFornecedorId = pessoa.id;
-          const idLinha = props.node.data?.id?.toString();
-          if (idLinha && !idLinha.startsWith('new-')) {
-            setLinhasModificadas(prev => new Set(prev).add(idLinha));
+      const confirmarValorDigitado = async () => {
+        if (selecionandoRef.current) return;
+        const texto = valor.trim();
+        if (!texto) {
+          valorCommitRef.current = '';
+          if (props.node?.data) props.node.data.clienteFornecedorId = null;
+          if (props.node && props.column) {
+            props.node.setDataValue(props.column.getColId(), '');
+          }
+          return;
+        }
+
+        let lista = sugestoesRef.current;
+        if (lista.length === 0) {
+          try {
+            const response = await fetch(`/api/clientes-fornecedores?search=${encodeURIComponent(texto)}`);
+            if (response.ok) {
+              const data = await response.json();
+              lista = Array.isArray(data) ? data : [];
+              sugestoesRef.current = lista;
+            }
+          } catch {
+            /* mantém lista vazia */
           }
         }
-        props.stopEditing();
+
+        const existente = resolverPessoaExistente(texto, lista);
+        if (existente) {
+          aplicarPessoaNaLinha(existente);
+          return;
+        }
+
+        valorCommitRef.current = texto;
+        if (props.node?.data) props.node.data.clienteFornecedorId = null;
+        if (props.node && props.column) {
+          props.node.setDataValue(props.column.getColId(), texto);
+        }
       };
+
+      const selecionarPessoa = (pessoa: { id: number; nome: string }) => {
+        selecionandoRef.current = true;
+        aplicarPessoaNaLinha(pessoa);
+        setSugestoes([]);
+        sugestoesRef.current = [];
+        setMostrarSugestoes(false);
+        setPosDropdown(null);
+        props.stopEditing();
+        setTimeout(() => {
+          selecionandoRef.current = false;
+        }, 250);
+      };
+
+      const atualizarPosDropdown = useCallback(() => {
+        if (!inputRef.current) return;
+        const rect = inputRef.current.getBoundingClientRect();
+        const alturaItem = 33;
+        const alturaLista = Math.min(200, Math.max(sugestoesRef.current.length, 1) * alturaItem + 4);
+        const espacoAbaixo = window.innerHeight - rect.bottom;
+        const espacoAcima = rect.top;
+        const abrirAcima = espacoAbaixo < alturaLista && espacoAcima > espacoAbaixo;
+        const top = abrirAcima
+          ? Math.max(4, rect.top - alturaLista - 2)
+          : rect.bottom + 2;
+        setPosDropdown({
+          top,
+          left: rect.left,
+          width: Math.max(rect.width, 180)
+        });
+      }, []);
+
+      useEffect(() => {
+        if (!mostrarSugestoes || sugestoes.length === 0) {
+          setPosDropdown(null);
+          return;
+        }
+        atualizarPosDropdown();
+        const onReposicionar = () => atualizarPosDropdown();
+        window.addEventListener('scroll', onReposicionar, true);
+        window.addEventListener('resize', onReposicionar);
+        return () => {
+          window.removeEventListener('scroll', onReposicionar, true);
+          window.removeEventListener('resize', onReposicionar);
+        };
+      }, [mostrarSugestoes, sugestoes, atualizarPosDropdown]);
 
       useImperativeHandle(ref, () => ({
         getValue() {
-          return valor;
+          const texto = valorCommitRef.current.trim();
+          if (!texto) return '';
+          const existente = resolverPessoaExistente(texto, sugestoesRef.current);
+          if (existente) {
+            valorCommitRef.current = existente.nome;
+            if (props.node?.data) {
+              props.node.data.clienteFornecedorId = existente.id;
+            }
+            return existente.nome;
+          }
+          return texto;
         },
         isPopup() {
           return true;
         },
         afterGuiAttached() {
+          valorCommitRef.current = props.value || '';
           requestAnimationFrame(() => {
             if (inputRef.current) {
               inputRef.current.focus();
@@ -281,6 +505,7 @@ export default function LancamentosGridPage() {
             value={valor}
             onChange={(e) => {
               const novoValor = e.target.value;
+              valorCommitRef.current = novoValor;
               setValor(novoValor);
               buscarPessoas(novoValor);
               if (props.node?.data) {
@@ -292,39 +517,48 @@ export default function LancamentosGridPage() {
                 buscarPessoas(e.target.value);
               }
             }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && sugestoesRef.current.length > 0) {
+                e.preventDefault();
+                const exata = resolverPessoaExistente(valor, sugestoesRef.current);
+                selecionarPessoa(exata || sugestoesRef.current[0]);
+              }
+            }}
             onBlur={() => {
               setTimeout(() => {
                 setMostrarSugestoes(false);
-                if (props.node && props.column) {
-                  props.node.setDataValue(props.column.getColId(), valor);
+                if (!selecionandoRef.current) {
+                  void confirmarValorDigitado();
                 }
               }, 200);
             }}
             placeholder="Digite para buscar ou digite um nome novo"
             style={{ width: '100%', padding: '4px 6px', fontSize: '12px' }}
           />
-          {mostrarSugestoes && sugestoes.length > 0 && (
+          {mostrarSugestoes && sugestoes.length > 0 && posDropdown && typeof document !== 'undefined' && createPortal(
             <div style={{
-              position: 'absolute',
-              top: '100%',
-              left: 0,
-              right: 0,
+              position: 'fixed',
+              top: posDropdown.top,
+              left: posDropdown.left,
+              width: posDropdown.width,
               background: 'white',
-              border: '1px solid #ddd',
+              border: '1px solid #ccc',
               borderRadius: '4px',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-              zIndex: 1000,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+              zIndex: 99999,
               maxHeight: '200px',
               overflowY: 'auto'
             }}>
               {sugestoes.map(pessoa => (
                 <div
                   key={pessoa.id}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => selecionarPessoa(pessoa)}
                   style={{
                     padding: '8px',
                     cursor: 'pointer',
-                    borderBottom: '1px solid #eee'
+                    borderBottom: '1px solid #eee',
+                    fontSize: '12px'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.background = '#f0f0f0';
@@ -336,10 +570,12 @@ export default function LancamentosGridPage() {
                   {pessoa.nome}
                 </div>
               ))}
-            </div>
+            </div>,
+            document.body
           )}
-          {valor && 
+          {valor &&
            !pessoas.some(p => p.nome.toLowerCase() === valor.toLowerCase()) &&
+           !sugestoes.some(p => p.nome.toLowerCase() === valor.toLowerCase()) &&
            !mostrarSugestoes && (
             <div style={{ 
               marginTop: '4px', 
@@ -539,7 +775,7 @@ export default function LancamentosGridPage() {
       cellStyle: compactCellStyle,
       cellEditor: 'ClienteFornecedorEditor',
       cellEditorPopup: true,
-      cellEditorPopupPosition: 'under'
+      cellEditorPopupPosition: 'over'
     },
     { 
       field: 'categoria', 
@@ -580,11 +816,13 @@ export default function LancamentosGridPage() {
           
           // Forçar atualização da célula de valor para refletir a cor
           setTimeout(() => {
-            params.api.refreshCells({
-              rowNodes: [params.node],
-              columns: ['valor'],
-              force: true
-            });
+            if (params.node) {
+              params.api.refreshCells({
+                rowNodes: [params.node],
+                columns: ['valor'],
+                force: true
+              });
+            }
           }, 0);
         }
         
@@ -669,11 +907,13 @@ export default function LancamentosGridPage() {
         
         // Forçar atualização da célula para refletir a cor
         setTimeout(() => {
-          params.api.refreshCells({
-            rowNodes: [params.node],
-            columns: ['valor'],
-            force: true
-          });
+          if (params.node) {
+            params.api.refreshCells({
+              rowNodes: [params.node],
+              columns: ['valor'],
+              force: true
+            });
+          }
         }, 0);
         
         return true;
@@ -684,8 +924,19 @@ export default function LancamentosGridPage() {
       headerName: 'Parcelas',
       width: 80,
       editable: true,
-      cellEditor: 'agNumberCellEditor',
-      cellStyle: compactRightCellStyle
+      cellEditor: 'agTextCellEditor',
+      cellStyle: compactRightCellStyle,
+      valueGetter: (params) =>
+        formatParcelaExibicao(params.data?.numeroParcela, params.data?.totalParcelas),
+      valueSetter: (params) => {
+        const { numeroParcela, totalParcelas } = normalizarParcelasCampos({
+          parcelas: params.newValue
+        });
+        params.data.numeroParcela = numeroParcela;
+        params.data.totalParcelas = totalParcelas;
+        params.data.parcelas = formatParcelaExibicao(numeroParcela, totalParcelas);
+        return true;
+      }
     },
     { 
       field: 'dataVencimento', 
@@ -817,6 +1068,16 @@ export default function LancamentosGridPage() {
 
   const [gridApi, setGridApi] = useState<any>(null);
   const [columnApi, setColumnApi] = useState<any>(null);
+  const linhaSelecionadaIdRef = useRef<string | null>(null);
+
+  const rowSelection = useMemo(
+    () => ({
+      mode: 'singleRow' as const,
+      enableClickSelection: true,
+      checkboxes: false
+    }),
+    []
+  );
 
   const onGridReady = (params: GridReadyEvent) => {
     console.log('[GRID] Grid pronto - RowData atual:', rowData.length, 'linhas');
@@ -844,13 +1105,36 @@ export default function LancamentosGridPage() {
   }, [rowData, gridApi, columnApi]);
 
   useEffect(() => {
+    if (!gridApi || rowData.length === 0) return;
+    if (!scrollParaLinhaRef.current && scrollGridParaRef.current !== 'fim') return;
+
+    const rolarParaFim = () => {
+      const idAlvo = scrollParaLinhaRef.current;
+      if (idAlvo) {
+        scrollParaLinhaRef.current = null;
+        const node = gridApi.getRowNode(idAlvo);
+        if (node) {
+          gridApi.ensureNodeVisible(node, 'middle');
+          return;
+        }
+      }
+      if (scrollGridParaRef.current === 'fim') {
+        scrollGridParaRef.current = null;
+        gridApi.ensureIndexVisible(rowData.length - 1, 'bottom');
+      }
+    };
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(rolarParaFim);
+    });
+  }, [rowData, gridApi, filtroSituacao]);
+
+  useEffect(() => {
     if (!gridApi) return;
     const onEditingStopped = (e: any) => {
       const node = e.node;
       if (!node?.data?.id) return;
       const id = String(node.data.id);
-      if (id.startsWith('new-')) return;
-
       const data = { ...node.data };
       if (data.dataVencimento && data.dataCompensacao) {
         data.status = 'Realizado';
@@ -858,6 +1142,13 @@ export default function LancamentosGridPage() {
         data.status = 'Planejado';
       } else {
         data.status = '-';
+      }
+
+      if (id.startsWith('new-')) {
+        setLinhasRascunho(prev => prev.map(r => (String(r.id) === id ? { ...data } : r)));
+        setRowData(prev => prev.map(r => (String(r.id) === id ? { ...data } : r)));
+        setLinhasModificadas(prev => new Set(prev).add(id));
+        return;
       }
 
       setRowData(prev => prev.map(r => (String(r.id) === id ? { ...data } : r)));
@@ -876,10 +1167,89 @@ export default function LancamentosGridPage() {
   }, [gridApi]);
 
   const handleNovo = () => {
-    console.log('[GRID] Botão Novo clicado');
-    console.log('[GRID] RowData atual:', rowData.length, 'linhas');
-    setLancamentoSelecionado(null);
-    setDrawerOpen(true);
+    const id = `new-${Date.now()}`;
+    const hoje = new Date();
+    const dd = String(hoje.getDate()).padStart(2, '0');
+    const mm = String(hoje.getMonth() + 1).padStart(2, '0');
+    const yyyy = hoje.getFullYear();
+    const dataStr = `${dd}/${mm}/${yyyy}`;
+    const novaLinha: any = {
+      id,
+      conta: '',
+      dataOperacao: dataStr,
+      dataOperacaoFormatada: dataStr,
+      clienteFornecedor: '',
+      clienteFornecedorId: null,
+      descricao: '',
+      categoria: '',
+      valor: null,
+      entradas: null,
+      saidas: null,
+      formaOperacao: '',
+      numeroParcela: 1,
+      totalParcelas: 1,
+      parcelas: '1',
+      dataVencimento: null,
+      dataVencimentoFormatada: '',
+      dataCompensacao: null,
+      dataCompensacaoFormatada: '',
+      status: '-',
+      observacao: '',
+      saldoParcial: 0
+    };
+    scrollParaLinhaRef.current = id;
+    setLinhasRascunho(prev => [...prev, novaLinha]);
+    setLinhasModificadas(prev => new Set(prev).add(id));
+  };
+
+  const estiloBotaoSituacao = (ativo: boolean) => ({
+    backgroundColor: ativo ? '#f0c000' : '#f5e8b0',
+    color: '#000',
+    border: ativo ? '3px solid #1a1a1a' : '2px solid #d4c870',
+    padding: '5px 10px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '11px',
+    fontWeight: ativo ? '800' : '600',
+    textTransform: 'uppercase' as const,
+    letterSpacing: '0.3px',
+    whiteSpace: 'nowrap' as const,
+    flexShrink: 0,
+    height: '28px',
+    lineHeight: '16px',
+    boxSizing: 'border-box' as const
+  });
+
+  const estiloFiltroCampo = {
+    padding: '4px 6px',
+    border: '1px solid #ddd',
+    borderRadius: '4px',
+    fontSize: '11px',
+    height: '28px',
+    boxSizing: 'border-box' as const,
+    flexShrink: 0
+  };
+
+  const handleFiltroPlanejado = () => {
+    scrollGridParaRef.current = null;
+    setFiltroSituacao(prev => (prev === 'Planejado' ? '' : 'Planejado'));
+  };
+
+  const handleFiltroRealizado = () => {
+    setFiltroSituacao(prev => {
+      const proximo = prev === 'Realizado' ? '' : 'Realizado';
+      if (proximo === 'Realizado') scrollGridParaRef.current = 'fim';
+      return proximo;
+    });
+  };
+
+  const handleLimparFiltros = () => {
+    scrollGridParaRef.current = null;
+    setFiltroConta('');
+    setFiltroMes('');
+    setFiltroCategoria('');
+    setFiltroBusca('');
+    setFiltroSituacao('');
   };
 
   const handleCellValueChanged = async (params: CellValueChangedEvent) => {
@@ -897,12 +1267,118 @@ export default function LancamentosGridPage() {
     setRowData(prev =>
       prev.map(r => (String(r.id) === String(rowId) ? { ...params.data } : r))
     );
+    if (rowId != null && String(rowId).startsWith('new-')) {
+      setLinhasRascunho(prev =>
+        prev.map(r => (String(r.id) === String(rowId) ? { ...params.data } : r))
+      );
+    }
 
     const id = rowId?.toString();
     const changed =
       String(params.newValue ?? '') !== String(params.oldValue ?? '');
-    if (id && !id.startsWith('new-') && changed) {
+    if (id && changed) {
       setLinhasModificadas(prev => new Set(prev).add(id));
+    }
+  };
+
+  const obterLinhaParaExcluir = () => {
+    if (!gridApi) return null;
+    const selecionadas = gridApi.getSelectedRows?.() || [];
+    if (selecionadas[0]?.id != null) return selecionadas[0];
+
+    const nodes = gridApi.getSelectedNodes?.() || [];
+    if (nodes[0]?.data?.id != null) return nodes[0].data;
+
+    if (linhaSelecionadaIdRef.current) {
+      const node = gridApi.getRowNode?.(linhaSelecionadaIdRef.current);
+      if (node?.data) return node.data;
+    }
+
+    const focused = gridApi.getFocusedCell?.();
+    if (focused?.rowIndex != null) {
+      const node = gridApi.getDisplayedRowAtIndex?.(focused.rowIndex);
+      if (node?.data?.id != null) return node.data;
+    }
+
+    return null;
+  };
+
+  const handleExcluir = async () => {
+    const linha = obterLinhaParaExcluir();
+    if (!linha?.id) {
+      alert('Selecione um lançamento para excluir (clique na linha).');
+      return;
+    }
+
+    const id = String(linha.id);
+
+    if (!confirm('Deseja excluir o lançamento selecionado?')) {
+      return;
+    }
+
+    if (id.startsWith('new-')) {
+      setLinhasRascunho(prev => prev.filter(r => String(r.id) !== id));
+      setLinhasModificadas(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      linhaSelecionadaIdRef.current = null;
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/lancamentos/${id}`, {
+        method: 'DELETE'
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.details || 'Erro ao excluir lançamento');
+      }
+
+      setLinhasModificadas(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      linhaSelecionadaIdRef.current = null;
+      await carregarDados();
+      alert('Lançamento excluído com sucesso!');
+    } catch (error: any) {
+      console.error('Erro ao excluir lançamento:', error);
+      alert(error.message || 'Erro ao excluir lançamento');
+    }
+  };
+
+  const postLancamentoApi = async (body: any) => {
+    const response = await fetch('/api/lancamentos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || 'Erro ao criar lançamento');
+    }
+  };
+
+  const criarLancamentosParcelados = async (bodyBase: any, linha: any, totalParcelas: number) => {
+    const dataVencBase = parseDataParaDate(linha.dataVencimento ?? bodyBase.dataVencimento);
+    if (!dataVencBase) {
+      throw new Error('Informe a data de vencimento da 1ª parcela para gerar as demais.');
+    }
+    for (let i = 0; i < totalParcelas; i++) {
+      const dataVencimento =
+        i === 0 ? dataParaIso(dataVencBase) : vencimentoComMesesAdicionados(dataVencBase, i);
+      const bodyParcela = {
+        ...bodyBase,
+        numeroParcela: i + 1,
+        totalParcelas,
+        dataVencimento,
+        dataCompensacao: i === 0 ? bodyBase.dataCompensacao ?? null : null
+      };
+      await postLancamentoApi(bodyParcela);
     }
   };
 
@@ -919,6 +1395,7 @@ export default function LancamentosGridPage() {
         const linha = linhaGrid || rowData.find(r => r.id?.toString() === id);
         if (!linha) return;
 
+        const parcelasLinha = normalizarParcelasCampos(linha);
         const payload: any = {
           conta: linha.conta,
           descricao: linha.descricao,
@@ -927,7 +1404,8 @@ export default function LancamentosGridPage() {
           entradas: linha.entradas || 0,
           saidas: linha.saidas || 0,
           formaOperacao: linha.formaOperacao,
-          parcelas: linha.parcelas,
+          numeroParcela: parcelasLinha.numeroParcela,
+          totalParcelas: parcelasLinha.totalParcelas,
           observacao: linha.observacao,
           dataVencimento: linha.dataVencimento || null,
           dataCompensacao: linha.dataCompensacao || null
@@ -957,6 +1435,15 @@ export default function LancamentosGridPage() {
                   : null;
                 if (encontrada?.id) {
                   pessoaId = encontrada.id;
+                  payload.clienteFornecedor = encontrada.nome;
+                } else if (Array.isArray(data) && data.length > 0) {
+                  const porPrefixo = data.filter((p: any) =>
+                    normalizarTexto(p.nome).startsWith(normalizarTexto(nome))
+                  );
+                  if (porPrefixo.length === 1) {
+                    pessoaId = porPrefixo[0].id;
+                    payload.clienteFornecedor = porPrefixo[0].nome;
+                  }
                 }
               }
               if (!pessoaId) {
@@ -983,6 +1470,64 @@ export default function LancamentosGridPage() {
           }
         }
 
+        if (String(id).startsWith('new-')) {
+          const body: any = {
+            conta: linha.conta || 'TODAS AS CONTAS',
+            dataOperacao: payload.dataOperacao,
+            clienteFornecedor: payload.clienteFornecedor ?? linha.clienteFornecedor ?? '',
+            descricao: linha.descricao || '',
+            categoria: linha.categoria || '',
+            valor: linha.valor || 0,
+            entradas: linha.entradas || 0,
+            saidas: linha.saidas || 0,
+            formaOperacao: linha.formaOperacao || '',
+            numeroParcela: linha.numeroParcela ?? 1,
+            totalParcelas: linha.totalParcelas ?? 1,
+            dataVencimento: linha.dataVencimento || null,
+            dataCompensacao: linha.dataCompensacao || null,
+            observacao: linha.observacao || ''
+          };
+          if (payload.clienteFornecedorId) {
+            body.clienteFornecedorId = payload.clienteFornecedorId;
+          }
+          if (!body.dataOperacao) {
+            throw new Error('Preencha a data de operação no lançamento novo.');
+          }
+          if (!body.descricao || !String(body.descricao).trim()) {
+            throw new Error('Preencha a descrição no lançamento novo.');
+          }
+          const valorAbs =
+            Math.abs(Number(linha.valor) || 0) ||
+            Math.abs(Number(linha.entradas) || 0) ||
+            Math.abs(Number(linha.saidas) || 0);
+          if (!valorAbs) {
+            throw new Error('Informe um valor maior que zero no lançamento novo.');
+          }
+
+          const sugestaoParcelas = totalParcelasParaGerar(linha);
+          if (sugestaoParcelas > 1) {
+            const resposta = window.prompt(
+              `Quantas parcelas deseja gerar? (informado no campo: ${sugestaoParcelas})`,
+              String(sugestaoParcelas)
+            );
+            if (resposta === null) {
+              throw new Error('Salvamento cancelado.');
+            }
+            const totalParcelas = parseInt(resposta, 10);
+            if (!Number.isFinite(totalParcelas) || totalParcelas < 2) {
+              throw new Error('Informe um número válido de parcelas (2 ou mais).');
+            }
+            await criarLancamentosParcelados(body, linha, totalParcelas);
+            return;
+          }
+
+          const parcelasNorm = normalizarParcelasCampos(linha);
+          body.numeroParcela = parcelasNorm.numeroParcela;
+          body.totalParcelas = parcelasNorm.totalParcelas;
+          await postLancamentoApi(body);
+          return;
+        }
+
         const response = await fetch(`/api/lancamentos/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -996,6 +1541,11 @@ export default function LancamentosGridPage() {
       });
 
       await Promise.all(promessas);
+      setLinhasRascunho(prev =>
+        prev.filter(
+          r => !idsModificados.some(mid => String(mid) === String(r.id) && String(mid).startsWith('new-'))
+        )
+      );
       await carregarDados();
       setLinhasModificadas(new Set());
       alert(`${idsModificados.length} lançamento(s) salvo(s) com sucesso!`);
@@ -1017,7 +1567,7 @@ export default function LancamentosGridPage() {
         entradas: dados.entradas || 0,
         saidas: dados.saidas || 0,
         formaOperacao: dados.formaOperacao || '',
-        parcelas: dados.parcelas || 1,
+        ...normalizarParcelasCampos(dados),
         dataVencimento: dados.dataVencimento || null,
         dataCompensacao: dados.dataCompensacao || null,
         observacao: dados.observacao || ''
@@ -1054,7 +1604,7 @@ export default function LancamentosGridPage() {
         entradas: dados.entradas || 0,
         saidas: dados.saidas || 0,
         formaOperacao: dados.formaOperacao || '',
-        parcelas: dados.parcelas || 1,
+        ...normalizarParcelasCampos(dados),
         dataVencimento: dados.dataVencimento || null,
         dataCompensacao: dados.dataCompensacao || null,
         observacao: dados.observacao || ''
@@ -1082,6 +1632,8 @@ export default function LancamentosGridPage() {
     }
     return opcoes;
   }, []);
+
+  const labelSaldoResumo = filtroSituacao === 'Realizado' ? 'Saldo atual' : 'Saldo futuro';
 
   return (
     <div style={{ 
@@ -1141,29 +1693,102 @@ export default function LancamentosGridPage() {
           >
             + Novo
           </button>
+          <button
+            onClick={handleExcluir}
+            style={{
+              backgroundColor: '#dc3545',
+              color: 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            Excluir
+          </button>
         </div>
       </div>
 
       {/* Filtros e Resumo */}
       <div style={{
         backgroundColor: 'white',
-        padding: '12px 16px',
+        padding: '8px 12px',
         borderBottom: '1px solid #ddd',
         display: 'flex',
-        gap: '16px',
-        flexWrap: 'wrap',
-        alignItems: 'center'
+        gap: '8px',
+        flexWrap: 'nowrap',
+        alignItems: 'center',
+        overflow: 'hidden'
       }}>
-        <div style={{ display: 'flex', gap: '12px', flex: 1, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={handleFiltroPlanejado}
+            style={estiloBotaoSituacao(filtroSituacao === 'Planejado')}
+          >
+            Planejado
+          </button>
+          <button
+            type="button"
+            onClick={handleFiltroRealizado}
+            style={estiloBotaoSituacao(filtroSituacao === 'Realizado')}
+          >
+            Realizado
+          </button>
+        </div>
+
+        {/* Resumo */}
+        <div style={{ display: 'flex', gap: '12px', flexShrink: 0 }}>
+          <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '1px' }}>Entradas</div>
+            <div style={{ fontSize: '12px', fontWeight: '600', color: '#28a745' }}>
+              R$ {resumo.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '1px' }}>Saídas</div>
+            <div style={{ fontSize: '12px', fontWeight: '600', color: '#dc3545' }}>
+              R$ {resumo.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '1px' }}>Diferença</div>
+            <div style={{ 
+              fontSize: '12px', 
+              fontWeight: '600', 
+              color: resumo.saldo >= 0 ? '#28a745' : '#dc3545' 
+            }}>
+              R$ {resumo.saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '1px' }}>{labelSaldoResumo}</div>
+            <div style={{
+              fontSize: '12px',
+              fontWeight: '700',
+              color: resumo.saldoFuturo >= 0 ? '#28a745' : '#dc3545'
+            }}>
+              R$ {resumo.saldoFuturo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: '8px' }} />
+
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, alignItems: 'center' }}>
           <select
             value={filtroConta}
             onChange={(e) => setFiltroConta(e.target.value)}
             style={{
-              padding: '6px 8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              fontSize: '12px',
-              minWidth: '150px'
+              ...estiloFiltroCampo,
+              width: '115px',
+              ...(filtroConta ? {
+                backgroundColor: '#e9ecef',
+                border: '3px solid #1a1a1a',
+                fontWeight: '700'
+              } : {})
             }}
           >
             <option value="">Todas as Contas</option>
@@ -1175,13 +1800,7 @@ export default function LancamentosGridPage() {
           <select
             value={filtroMes}
             onChange={(e) => setFiltroMes(e.target.value)}
-            style={{
-              padding: '6px 8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              fontSize: '12px',
-              minWidth: '150px'
-            }}
+            style={{ ...estiloFiltroCampo, width: '125px' }}
           >
             <option value="">Todos os Meses</option>
             {meses.map(m => (
@@ -1192,13 +1811,7 @@ export default function LancamentosGridPage() {
           <select
             value={filtroCategoria}
             onChange={(e) => setFiltroCategoria(e.target.value)}
-            style={{
-              padding: '6px 8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              fontSize: '12px',
-              minWidth: '150px'
-            }}
+            style={{ ...estiloFiltroCampo, width: '125px' }}
           >
             <option value="">Todas as Categorias</option>
             {categorias.map(c => (
@@ -1211,40 +1824,25 @@ export default function LancamentosGridPage() {
             placeholder="Buscar..."
             value={filtroBusca}
             onChange={(e) => setFiltroBusca(e.target.value)}
-            style={{
-              padding: '6px 8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              fontSize: '12px',
-              minWidth: '200px'
-            }}
+            style={{ ...estiloFiltroCampo, width: '90px', minWidth: '70px', flexShrink: 1 }}
           />
-        </div>
 
-        {/* Resumo */}
-        <div style={{ display: 'flex', gap: '24px', marginLeft: 'auto' }}>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Entradas</div>
-            <div style={{ fontSize: '14px', fontWeight: '600', color: '#28a745' }}>
-              R$ {resumo.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Saídas</div>
-            <div style={{ fontSize: '14px', fontWeight: '600', color: '#dc3545' }}>
-              R$ {resumo.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '11px', color: '#666', marginBottom: '2px' }}>Saldo</div>
-            <div style={{ 
-              fontSize: '14px', 
-              fontWeight: '600', 
-              color: resumo.saldo >= 0 ? '#28a745' : '#dc3545' 
-            }}>
-              R$ {resumo.saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={handleLimparFiltros}
+            style={{
+              ...estiloFiltroCampo,
+              padding: '4px 8px',
+              border: '1px solid #6c757d',
+              fontWeight: '500',
+              backgroundColor: '#f8f9fa',
+              color: '#333',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap'
+            }}
+          >
+            Limpar Filtros
+          </button>
         </div>
       </div>
 
@@ -1255,18 +1853,33 @@ export default function LancamentosGridPage() {
             box-shadow: inset 0 0 0 1px #0066cc;
             background: #f7fbff;
           }
+          .ag-theme-alpine .ag-body-viewport {
+            overflow-y: auto !important;
+          }
         `}</style>
-        <div className="ag-theme-alpine" style={{ flex: 1, width: '100%', minHeight: '400px' }}>
+        <div className="ag-theme-alpine" style={{ flex: 1, width: '100%', minHeight: 0, height: '100%' }}>
           <AgGridReact
             rowData={rowData}
             columnDefs={colDefs}
             defaultColDef={defaultColDef}
             components={components}
             onGridReady={onGridReady}
+            rowSelection={rowSelection}
+            onCellClicked={(params) => {
+              params.node.setSelected(true);
+              if (params.data?.id != null) {
+                linhaSelecionadaIdRef.current = String(params.data.id);
+              }
+            }}
+            onSelectionChanged={(e) => {
+              const rows = e.api.getSelectedRows?.() || [];
+              if (rows[0]?.id != null) {
+                linhaSelecionadaIdRef.current = String(rows[0].id);
+              }
+            }}
             rowHeight={28}
             headerHeight={28}
             suppressRowClickSelection={false}
-            rowSelection="single"
             onCellValueChanged={handleCellValueChanged}
             enterNavigatesVertically={true}
             enterNavigatesVerticallyAfterEdit={true}
@@ -1343,9 +1956,15 @@ export default function LancamentosGridPage() {
           </span>
         </div>
         <div>
-          <span style={{ color: '#666', marginRight: '8px' }}>Saldo Final:</span>
+          <span style={{ color: '#666', marginRight: '8px' }}>Diferença:</span>
           <span style={{ color: resumo.saldo >= 0 ? '#28a745' : '#dc3545' }}>
             R$ {resumo.saldo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </span>
+        </div>
+        <div>
+          <span style={{ color: '#666', marginRight: '8px' }}>{labelSaldoResumo}:</span>
+          <span style={{ color: resumo.saldoFuturo >= 0 ? '#28a745' : '#dc3545' }}>
+            R$ {resumo.saldoFuturo.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
         </div>
       </div>

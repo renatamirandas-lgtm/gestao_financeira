@@ -28,9 +28,12 @@ export async function DELETE(
       return NextResponse.json({ error: 'Lançamento não encontrado' }, { status: 404 });
     }
     return NextResponse.json({ success: true });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erro ao excluir lançamento:', error);
-    return NextResponse.json({ error: 'Erro ao excluir lançamento' }, { status: 500 });
+    return NextResponse.json(
+      { error: error.message || 'Erro ao excluir lançamento' },
+      { status: 500 }
+    );
   }
 }
 

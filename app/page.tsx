@@ -55,6 +55,12 @@ export default function Home() {
             <Link href="/resultados" style={{ padding: '8px 16px', background: '#6c757d', color: 'white', borderRadius: '4px' }}>
               Resultados
             </Link>
+            <Link href="/orcado-realizado" style={{ padding: '8px 16px', background: '#6c757d', color: 'white', borderRadius: '4px' }}>
+              Orçado x Realizado
+            </Link>
+            <Link href="/importar-lancamentos" style={{ padding: '8px 16px', background: '#17a2b8', color: 'white', borderRadius: '4px' }}>
+              Importar Excel
+            </Link>
             <Link href="/configuracoes" style={{ padding: '8px 16px', background: '#6c757d', color: 'white', borderRadius: '4px' }}>
               Configurações
             </Link>
@@ -103,6 +109,9 @@ export default function Home() {
           </Link>
           <Link href="/resultados" style={{ padding: '12px 24px', background: '#6c757d', color: 'white', borderRadius: '4px', display: 'inline-block' }}>
             📈 Ver Resultados
+          </Link>
+          <Link href="/orcado-realizado" style={{ padding: '12px 24px', background: '#17a2b8', color: 'white', borderRadius: '4px', display: 'inline-block' }}>
+            📋 Orçado x Realizado
           </Link>
         </div>
       </div>
