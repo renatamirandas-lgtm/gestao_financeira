@@ -125,6 +125,22 @@ function getArrayValue(value: any): any {
   return value;
 }
 
+async function proximoId(tabela: 'banco' | 'agencia' | 'categoria' | 'grupo_categoria' | 'pessoa' | 'tipo_operacao'): Promise<number> {
+  const colunas: Record<typeof tabela, string> = {
+    banco: 'id_banco',
+    agencia: 'id_agencia',
+    categoria: 'id_categoria',
+    grupo_categoria: 'id_grupo_categoria',
+    pessoa: 'id_pessoa',
+    tipo_operacao: 'id_tp_operacao'
+  };
+  const coluna = colunas[tabela];
+  const result = await pool.query(
+    `SELECT COALESCE(MAX(${coluna}), 0) + 1 AS next_id FROM ${tabela}`
+  );
+  return Number(result.rows[0].next_id);
+}
+
 let parcelaColunasProntas = false;
 let categoriaOrcamentoTabelaPronta = false;
 
@@ -734,11 +750,17 @@ export const DataService = {
   
   addBanco: async (banco: Omit<Banco, 'id'>): Promise<Banco> => {
     try {
+      if (!banco.nome || banco.nome.trim() === '') {
+        throw new Error('O nome do banco é obrigatório');
+      }
+
+      const nextId = await proximoId('banco');
       const result = await pool.query(
-        'INSERT INTO banco (nr_banco, no_banco) VALUES ($1, $2) RETURNING id_banco, nr_banco, no_banco',
+        'INSERT INTO banco (id_banco, nr_banco, no_banco) VALUES ($1, $2, $3) RETURNING id_banco, nr_banco, no_banco',
         [
-          banco.numero ? `{${banco.numero}}` : null,
-          `{${banco.nome}}`
+          nextId,
+          banco.numero ? `{${banco.numero.trim()}}` : null,
+          `{${banco.nome.trim()}}`
         ]
       );
       return {
@@ -894,9 +916,10 @@ export const DataService = {
       // Converter "Entrada" → "E" e "Saída" → "S"
       const tipoCategoriaCode = tipoCategoria === 'Entrada' ? 'E' : 'S';
       
+      const nextId = await proximoId('grupo_categoria');
       const result = await pool.query(
-        'INSERT INTO grupo_categoria (tp_categoria, no_grupo_categoria) VALUES ($1, $2) RETURNING id_grupo_categoria, tp_categoria, no_grupo_categoria',
-        [`{${tipoCategoriaCode}}`, `{${grupo.nome.trim()}}`]
+        'INSERT INTO grupo_categoria (id_grupo_categoria, tp_categoria, no_grupo_categoria) VALUES ($1, $2, $3) RETURNING id_grupo_categoria, tp_categoria, no_grupo_categoria',
+        [nextId, `{${tipoCategoriaCode}}`, `{${grupo.nome.trim()}}`]
       );
       
       const row = result.rows[0];
@@ -969,9 +992,10 @@ export const DataService = {
         throw new Error('O grupo de categoria é obrigatório');
       }
 
+      const nextId = await proximoId('categoria');
       const result = await pool.query(
-        'INSERT INTO categoria (id_grupo_categoria, no_categoria) VALUES ($1, $2) RETURNING id_categoria, id_grupo_categoria, no_categoria',
-        [categoria.grupoCategoriaId, categoria.nome.trim()] // no_categoria é TEXT, não ARRAY
+        'INSERT INTO categoria (id_categoria, id_grupo_categoria, no_categoria) VALUES ($1, $2, $3) RETURNING id_categoria, id_grupo_categoria, no_categoria',
+        [nextId, categoria.grupoCategoriaId, categoria.nome.trim()]
       );
       return {
         id: result.rows[0].id_categoria,
@@ -1084,16 +1108,18 @@ export const DataService = {
         throw new Error('O nome da pessoa é obrigatório');
       }
       
+      const nextId = await proximoId('pessoa');
       const result = await pool.query(`
         INSERT INTO pessoa (
-          no_pessoa, no_fantasia, tp_pessoa, nr_documento,
+          id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
           no_logradouro, nr_logradouro, ds_complemento,
           nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
           no_logradouro, nr_logradouro, ds_complemento,
           nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
       `, [
+        nextId,
         `{${pessoa.nome.trim()}}`,
         pessoa.nomeFantasia && pessoa.nomeFantasia.trim() !== '' ? `{${pessoa.nomeFantasia.trim()}}` : null,
         pessoa.tipoPessoa === 'Jurídica' ? ['J'] : ['F'],
@@ -1152,9 +1178,10 @@ export const DataService = {
         throw new Error('O nome da forma de operação é obrigatório');
       }
 
+      const nextId = await proximoId('tipo_operacao');
       const result = await pool.query(
-        'INSERT INTO tipo_operacao (no_tp_operacao) VALUES ($1) RETURNING id_tp_operacao, no_tp_operacao',
-        [`{${forma.nome.trim()}}`]
+        'INSERT INTO tipo_operacao (id_tp_operacao, no_tp_operacao) VALUES ($1, $2) RETURNING id_tp_operacao, no_tp_operacao',
+        [nextId, `{${forma.nome.trim()}}`]
       );
       return {
         id: result.rows[0].id_tp_operacao.toString(),
@@ -1240,9 +1267,11 @@ export const DataService = {
         throw new Error('Banco selecionado não existe');
       }
       
+      const nextId = await proximoId('agencia');
       const result = await pool.query(
-        'INSERT INTO agencia (id_banco, nr_agencia, no_agencia) VALUES ($1, $2, $3) RETURNING id_agencia, id_banco, nr_agencia, no_agencia',
+        'INSERT INTO agencia (id_agencia, id_banco, nr_agencia, no_agencia) VALUES ($1, $2, $3, $4) RETURNING id_agencia, id_banco, nr_agencia, no_agencia',
         [
+          nextId,
           agencia.bancoId,
           agencia.numero && agencia.numero.trim() !== '' ? `{${agencia.numero.trim()}}` : null,
           `{${agencia.nome.trim()}}`

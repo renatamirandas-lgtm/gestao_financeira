@@ -114,7 +114,8 @@ export default function ConfiguracoesPage() {
         setFormBanco({ numero: '', nome: '' });
         carregarDados();
       } else {
-        alert('Erro ao salvar banco');
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Erro ao salvar banco');
       }
     } catch (error) {
       alert('Erro ao salvar banco');

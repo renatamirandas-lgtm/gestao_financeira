@@ -16,9 +16,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const banco = await DataService.addBanco(body);
     return NextResponse.json(banco, { status: 201 });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Erro ao adicionar banco:', error);
-    return NextResponse.json({ error: 'Erro ao adicionar banco' }, { status: 500 });
+    return NextResponse.json({ error: error.message || 'Erro ao adicionar banco' }, { status: 500 });
   }
 }
 
