@@ -141,6 +141,25 @@ async function proximoId(tabela: 'banco' | 'agencia' | 'categoria' | 'grupo_cate
   return Number(result.rows[0].next_id);
 }
 
+function precisaIdManual(error: any): boolean {
+  const msg = String(error?.message || '');
+  return error?.code === '23502' || msg.includes('null value in column');
+}
+
+async function executarInsertCompativel<T>(
+  insertAuto: () => Promise<T>,
+  insertManual: () => Promise<T>
+): Promise<T> {
+  try {
+    return await insertAuto();
+  } catch (errorAuto: any) {
+    if (precisaIdManual(errorAuto)) {
+      return await insertManual();
+    }
+    throw errorAuto;
+  }
+}
+
 let parcelaColunasProntas = false;
 let categoriaOrcamentoTabelaPronta = false;
 
@@ -754,19 +773,31 @@ export const DataService = {
         throw new Error('O nome do banco é obrigatório');
       }
 
-      const nextId = await proximoId('banco');
-      const result = await pool.query(
-        'INSERT INTO banco (id_banco, nr_banco, no_banco) VALUES ($1, $2, $3) RETURNING id_banco, nr_banco, no_banco',
-        [
-          nextId,
-          banco.numero ? `{${banco.numero.trim()}}` : null,
-          `{${banco.nome.trim()}}`
-        ]
+      const numeroFmt = banco.numero ? `{${banco.numero.trim()}}` : null;
+      const nomeFmt = `{${banco.nome.trim()}}`;
+
+      const row = await executarInsertCompativel(
+        async () => {
+          const result = await pool.query(
+            'INSERT INTO banco (nr_banco, no_banco) VALUES ($1, $2) RETURNING id_banco, nr_banco, no_banco',
+            [numeroFmt, nomeFmt]
+          );
+          return result.rows[0];
+        },
+        async () => {
+          const nextId = await proximoId('banco');
+          const result = await pool.query(
+            'INSERT INTO banco (id_banco, nr_banco, no_banco) VALUES ($1, $2, $3) RETURNING id_banco, nr_banco, no_banco',
+            [nextId, numeroFmt, nomeFmt]
+          );
+          return result.rows[0];
+        }
       );
+
       return {
-        id: result.rows[0].id_banco,
-        numero: getArrayValue(result.rows[0].nr_banco) || undefined,
-        nome: getArrayValue(result.rows[0].no_banco) || banco.nome
+        id: row.id_banco,
+        numero: getArrayValue(row.nr_banco) || undefined,
+        nome: getArrayValue(row.no_banco) || banco.nome
       };
     } catch (error) {
       console.error('Erro ao adicionar banco:', error);
@@ -916,13 +947,27 @@ export const DataService = {
       // Converter "Entrada" → "E" e "Saída" → "S"
       const tipoCategoriaCode = tipoCategoria === 'Entrada' ? 'E' : 'S';
       
-      const nextId = await proximoId('grupo_categoria');
-      const result = await pool.query(
-        'INSERT INTO grupo_categoria (id_grupo_categoria, tp_categoria, no_grupo_categoria) VALUES ($1, $2, $3) RETURNING id_grupo_categoria, tp_categoria, no_grupo_categoria',
-        [nextId, `{${tipoCategoriaCode}}`, `{${grupo.nome.trim()}}`]
+      const tipoFmt = `{${tipoCategoriaCode}}`;
+      const nomeFmt = `{${grupo.nome.trim()}}`;
+
+      const row = await executarInsertCompativel(
+        async () => {
+          const result = await pool.query(
+            'INSERT INTO grupo_categoria (tp_categoria, no_grupo_categoria) VALUES ($1, $2) RETURNING id_grupo_categoria, tp_categoria, no_grupo_categoria',
+            [tipoFmt, nomeFmt]
+          );
+          return result.rows[0];
+        },
+        async () => {
+          const nextId = await proximoId('grupo_categoria');
+          const result = await pool.query(
+            'INSERT INTO grupo_categoria (id_grupo_categoria, tp_categoria, no_grupo_categoria) VALUES ($1, $2, $3) RETURNING id_grupo_categoria, tp_categoria, no_grupo_categoria',
+            [nextId, tipoFmt, nomeFmt]
+          );
+          return result.rows[0];
+        }
       );
       
-      const row = result.rows[0];
       const tipoCategoriaRetrieved = getArrayValue(row.tp_categoria);
       const tipoCategoriaFinal = tipoCategoriaRetrieved === 'E' ? 'Entrada' : tipoCategoriaRetrieved === 'S' ? 'Saída' : tipoCategoria;
       
@@ -992,15 +1037,28 @@ export const DataService = {
         throw new Error('O grupo de categoria é obrigatório');
       }
 
-      const nextId = await proximoId('categoria');
-      const result = await pool.query(
-        'INSERT INTO categoria (id_categoria, id_grupo_categoria, no_categoria) VALUES ($1, $2, $3) RETURNING id_categoria, id_grupo_categoria, no_categoria',
-        [nextId, categoria.grupoCategoriaId, categoria.nome.trim()]
+      const nomeCat = categoria.nome.trim();
+      const row = await executarInsertCompativel(
+        async () => {
+          const result = await pool.query(
+            'INSERT INTO categoria (id_grupo_categoria, no_categoria) VALUES ($1, $2) RETURNING id_categoria, id_grupo_categoria, no_categoria',
+            [categoria.grupoCategoriaId, nomeCat]
+          );
+          return result.rows[0];
+        },
+        async () => {
+          const nextId = await proximoId('categoria');
+          const result = await pool.query(
+            'INSERT INTO categoria (id_categoria, id_grupo_categoria, no_categoria) VALUES ($1, $2, $3) RETURNING id_categoria, id_grupo_categoria, no_categoria',
+            [nextId, categoria.grupoCategoriaId, nomeCat]
+          );
+          return result.rows[0];
+        }
       );
       return {
-        id: result.rows[0].id_categoria,
-        grupoCategoriaId: result.rows[0].id_grupo_categoria,
-        nome: result.rows[0].no_categoria || categoria.nome
+        id: row.id_categoria,
+        grupoCategoriaId: row.id_grupo_categoria,
+        nome: row.no_categoria || categoria.nome
       };
     } catch (error: any) {
       console.error('Erro ao adicionar categoria:', error);
@@ -1108,18 +1166,7 @@ export const DataService = {
         throw new Error('O nome da pessoa é obrigatório');
       }
       
-      const nextId = await proximoId('pessoa');
-      const result = await pool.query(`
-        INSERT INTO pessoa (
-          id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
-          no_logradouro, nr_logradouro, ds_complemento,
-          nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
-          no_logradouro, nr_logradouro, ds_complemento,
-          nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
-      `, [
-        nextId,
+      const pessoaParams = [
         `{${pessoa.nome.trim()}}`,
         pessoa.nomeFantasia && pessoa.nomeFantasia.trim() !== '' ? `{${pessoa.nomeFantasia.trim()}}` : null,
         pessoa.tipoPessoa === 'Jurídica' ? ['J'] : ['F'],
@@ -1132,9 +1179,38 @@ export const DataService = {
           ? `{${pessoa.situacaoPessoa.trim()}}`
           : null,
         pessoa.tipoParteInteressada === 'C' ? 1 : pessoa.tipoParteInteressada === 'F' ? 2 : null
-      ]);
+      ];
+
+      const row = await executarInsertCompativel(
+        async () => {
+          const result = await pool.query(`
+            INSERT INTO pessoa (
+              no_pessoa, no_fantasia, tp_pessoa, nr_documento,
+              no_logradouro, nr_logradouro, ds_complemento,
+              nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
+              no_logradouro, nr_logradouro, ds_complemento,
+              nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
+          `, pessoaParams);
+          return result.rows[0];
+        },
+        async () => {
+          const nextId = await proximoId('pessoa');
+          const result = await pool.query(`
+            INSERT INTO pessoa (
+              id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
+              no_logradouro, nr_logradouro, ds_complemento,
+              nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING id_pessoa, no_pessoa, no_fantasia, tp_pessoa, nr_documento,
+              no_logradouro, nr_logradouro, ds_complemento,
+              nr_inscricaoestadual, no_situacao_pessoa, tp_parte_interessada
+          `, [nextId, ...pessoaParams]);
+          return result.rows[0];
+        }
+      );
       
-      const row = result.rows[0];
       return {
         id: row.id_pessoa,
         nome: getArrayValue(row.no_pessoa) || pessoa.nome,
@@ -1178,14 +1254,27 @@ export const DataService = {
         throw new Error('O nome da forma de operação é obrigatório');
       }
 
-      const nextId = await proximoId('tipo_operacao');
-      const result = await pool.query(
-        'INSERT INTO tipo_operacao (id_tp_operacao, no_tp_operacao) VALUES ($1, $2) RETURNING id_tp_operacao, no_tp_operacao',
-        [nextId, `{${forma.nome.trim()}}`]
+      const nomeFmt = `{${forma.nome.trim()}}`;
+      const row = await executarInsertCompativel(
+        async () => {
+          const result = await pool.query(
+            'INSERT INTO tipo_operacao (no_tp_operacao) VALUES ($1) RETURNING id_tp_operacao, no_tp_operacao',
+            [nomeFmt]
+          );
+          return result.rows[0];
+        },
+        async () => {
+          const nextId = await proximoId('tipo_operacao');
+          const result = await pool.query(
+            'INSERT INTO tipo_operacao (id_tp_operacao, no_tp_operacao) VALUES ($1, $2) RETURNING id_tp_operacao, no_tp_operacao',
+            [nextId, nomeFmt]
+          );
+          return result.rows[0];
+        }
       );
       return {
-        id: result.rows[0].id_tp_operacao.toString(),
-        nome: getArrayValue(result.rows[0].no_tp_operacao) || forma.nome
+        id: row.id_tp_operacao.toString(),
+        nome: getArrayValue(row.no_tp_operacao) || forma.nome
       };
     } catch (error: any) {
       console.error('Erro ao adicionar forma de operação:', error);
@@ -1267,21 +1356,31 @@ export const DataService = {
         throw new Error('Banco selecionado não existe');
       }
       
-      const nextId = await proximoId('agencia');
-      const result = await pool.query(
-        'INSERT INTO agencia (id_agencia, id_banco, nr_agencia, no_agencia) VALUES ($1, $2, $3, $4) RETURNING id_agencia, id_banco, nr_agencia, no_agencia',
-        [
-          nextId,
-          agencia.bancoId,
-          agencia.numero && agencia.numero.trim() !== '' ? `{${agencia.numero.trim()}}` : null,
-          `{${agencia.nome.trim()}}`
-        ]
+      const numeroFmt = agencia.numero && agencia.numero.trim() !== '' ? `{${agencia.numero.trim()}}` : null;
+      const nomeFmt = `{${agencia.nome.trim()}}`;
+
+      const row = await executarInsertCompativel(
+        async () => {
+          const result = await pool.query(
+            'INSERT INTO agencia (id_banco, nr_agencia, no_agencia) VALUES ($1, $2, $3) RETURNING id_agencia, id_banco, nr_agencia, no_agencia',
+            [agencia.bancoId, numeroFmt, nomeFmt]
+          );
+          return result.rows[0];
+        },
+        async () => {
+          const nextId = await proximoId('agencia');
+          const result = await pool.query(
+            'INSERT INTO agencia (id_agencia, id_banco, nr_agencia, no_agencia) VALUES ($1, $2, $3, $4) RETURNING id_agencia, id_banco, nr_agencia, no_agencia',
+            [nextId, agencia.bancoId, numeroFmt, nomeFmt]
+          );
+          return result.rows[0];
+        }
       );
       return {
-        id: result.rows[0].id_agencia,
-        bancoId: result.rows[0].id_banco || agencia.bancoId,
-        numero: getArrayValue(result.rows[0].nr_agencia) || undefined,
-        nome: getArrayValue(result.rows[0].no_agencia) || agencia.nome
+        id: row.id_agencia,
+        bancoId: row.id_banco || agencia.bancoId,
+        numero: getArrayValue(row.nr_agencia) || undefined,
+        nome: getArrayValue(row.no_agencia) || agencia.nome
       };
     } catch (error) {
       console.error('Erro ao adicionar agência:', error);
