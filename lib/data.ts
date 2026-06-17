@@ -162,6 +162,7 @@ async function executarInsertCompativel<T>(
 
 let parcelaColunasProntas = false;
 let categoriaOrcamentoTabelaPronta = false;
+let categoriaFkCorrigida = false;
 
 async function ensureParcelaColunas() {
   if (parcelaColunasProntas) return;
@@ -186,6 +187,14 @@ async function ensureCategoriaOrcamentoTable() {
     CREATE INDEX IF NOT EXISTS idx_categoria_orcamento_periodo ON categoria_orcamento (ano, mes);
   `);
   categoriaOrcamentoTabelaPronta = true;
+}
+
+async function ensureCategoriaFkCorrigida() {
+  if (categoriaFkCorrigida) return;
+  await pool.query(`
+    ALTER TABLE categoria DROP CONSTRAINT IF EXISTS id_grupo_categoria_fk;
+  `);
+  categoriaFkCorrigida = true;
 }
 
 function dataNoPeriodo(data: Date | string | undefined, mes: number, ano: number): boolean {
@@ -1001,6 +1010,7 @@ export const DataService = {
   // Categorias
   getCategorias: async (): Promise<(Categoria & { tipoGrupo?: string })[]> => {
     try {
+      await ensureCategoriaFkCorrigida();
       const result = await pool.query(`
         SELECT 
           c.id_categoria as id, 
@@ -1029,12 +1039,22 @@ export const DataService = {
   
   addCategoria: async (categoria: Omit<Categoria, 'id'>): Promise<Categoria> => {
     try {
+      await ensureCategoriaFkCorrigida();
+
       if (!categoria.nome || categoria.nome.trim() === '') {
         throw new Error('O nome da categoria é obrigatório');
       }
 
       if (!categoria.grupoCategoriaId || categoria.grupoCategoriaId === 0) {
         throw new Error('O grupo de categoria é obrigatório');
+      }
+
+      const grupoCheck = await pool.query(
+        'SELECT id_grupo_categoria FROM grupo_categoria WHERE id_grupo_categoria = $1',
+        [categoria.grupoCategoriaId]
+      );
+      if (grupoCheck.rows.length === 0) {
+        throw new Error('Grupo de categoria selecionado não existe');
       }
 
       const nomeCat = categoria.nome.trim();
