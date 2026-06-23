@@ -3,6 +3,7 @@
 import pool from './db';
 import { Lancamento, Banco, FormaPagamento, FluxoCaixa, ResultadoMensal, GrupoCategoria, Categoria, Pessoa, Agencia, CategoriaOrcamento, OrcadoRealizadoDashboard, OrcadoRealizadoItem } from '@/types';
 import { formatParcelaExibicao, normalizarParcelasCampos } from './parcelas';
+import { somenteDigitos } from './texto';
 
 export { formatParcelaExibicao, normalizarParcelasCampos } from './parcelas';
 
@@ -123,6 +124,20 @@ function getArrayValue(value: any): any {
   }
   
   return value;
+}
+
+function salvarMaiusculo(valor?: string | null): string {
+  if (valor == null) return '';
+  return String(valor).trim().toLocaleUpperCase('pt-BR');
+}
+
+function salvarMaiusculoOpcional(valor?: string | null): string | null {
+  const texto = salvarMaiusculo(valor);
+  return texto === '' ? null : texto;
+}
+
+function compararTextoSalvo(a?: string | null, b?: string | null): boolean {
+  return salvarMaiusculo(a) === salvarMaiusculo(b);
 }
 
 async function proximoId(tabela: 'banco' | 'agencia' | 'categoria' | 'grupo_categoria' | 'pessoa' | 'tipo_operacao'): Promise<number> {
@@ -399,12 +414,18 @@ export const DataService = {
   addLancamento: async (lancamento: Lancamento): Promise<Lancamento> => {
     try {
       await ensureParcelaColunas();
+      const descricaoSalvar = salvarMaiusculo(lancamento.descricao);
+      const categoriaSalvar = salvarMaiusculoOpcional(lancamento.categoria);
+      const clienteSalvar = salvarMaiusculoOpcional(lancamento.clienteFornecedor);
+      const contaSalvar = lancamento.conta ? salvarMaiusculo(lancamento.conta) : '';
+      const formaOperacaoSalvar = salvarMaiusculoOpcional(lancamento.formaOperacao);
+
       const { numeroParcela, totalParcelas } = normalizarParcelasCampos(lancamento);
       // Resolver/garantir pessoa (cliente/fornecedor)
       let pessoaId: number | null = (lancamento as any).clienteFornecedorId || null;
-      if (!pessoaId && lancamento.clienteFornecedor && lancamento.clienteFornecedor.trim() !== '') {
+      if (!pessoaId && clienteSalvar) {
         try {
-          const nome = lancamento.clienteFornecedor.trim();
+          const nome = clienteSalvar;
           console.log('[ADD] Buscando pessoa:', nome);
           
           const pessoaExistente = await pool.query(
@@ -415,7 +436,7 @@ export const DataService = {
           // Procurar pessoa comparando com getArrayValue
           for (const row of pessoaExistente.rows) {
             const nomePessoa = getArrayValue(row.no_pessoa);
-            if (nomePessoa && nomePessoa.toLowerCase().trim() === nome.toLowerCase().trim()) {
+            if (nomePessoa && compararTextoSalvo(nomePessoa, nome)) {
               pessoaId = row.id_pessoa;
               console.log('[ADD] Pessoa encontrada! ID:', pessoaId);
               break;
@@ -449,7 +470,7 @@ export const DataService = {
       }
       
       // Validações
-      if (!lancamento.descricao || lancamento.descricao.trim() === '') {
+      if (!descricaoSalvar) {
         throw new Error('Descrição é obrigatória');
       }
       
@@ -462,8 +483,8 @@ export const DataService = {
       }
 
       let contaId: number | null = null;
-      if (lancamento.conta && lancamento.conta !== 'TODAS AS CONTAS') {
-        console.log('[ADD] Buscando conta:', lancamento.conta);
+      if (contaSalvar && contaSalvar !== 'TODAS AS CONTAS') {
+        console.log('[ADD] Buscando conta:', contaSalvar);
         const contaResult = await pool.query(
           `SELECT id_conta_corrente, no_conta_corrente 
            FROM conta_corrente`
@@ -473,8 +494,8 @@ export const DataService = {
         // Procurar conta comparando com getArrayValue
         for (const row of contaResult.rows) {
           const nomeConta = getArrayValue(row.no_conta_corrente);
-          console.log('[ADD] Comparando:', nomeConta, 'com', lancamento.conta);
-          if (nomeConta && nomeConta.toLowerCase().trim() === lancamento.conta.toLowerCase().trim()) {
+          console.log('[ADD] Comparando:', nomeConta, 'com', contaSalvar);
+          if (nomeConta && compararTextoSalvo(nomeConta, contaSalvar)) {
             contaId = row.id_conta_corrente;
             console.log('[ADD] Conta encontrada! ID:', contaId);
             break;
@@ -482,14 +503,14 @@ export const DataService = {
         }
         
         if (!contaId) {
-          console.log('[ADD] Conta não encontrada para:', lancamento.conta);
+          console.log('[ADD] Conta não encontrada para:', contaSalvar);
         }
       }
 
       // Buscar id_tp_operacao pela formaOperacao
       let tipoOperacaoId: number | null = null;
-      if (lancamento.formaOperacao) {
-        console.log('[ADD] Buscando tipo operação:', lancamento.formaOperacao);
+      if (formaOperacaoSalvar) {
+        console.log('[ADD] Buscando tipo operação:', formaOperacaoSalvar);
         const tipoResult = await pool.query(
           `SELECT id_tp_operacao, no_tp_operacao 
            FROM tipo_operacao`
@@ -498,8 +519,8 @@ export const DataService = {
         
         for (const row of tipoResult.rows) {
           const nomeTipo = getArrayValue(row.no_tp_operacao);
-          console.log('[ADD] Comparando tipo:', nomeTipo, 'com', lancamento.formaOperacao);
-          if (nomeTipo && nomeTipo.toLowerCase().trim() === lancamento.formaOperacao.toLowerCase().trim()) {
+          console.log('[ADD] Comparando tipo:', nomeTipo, 'com', formaOperacaoSalvar);
+          if (nomeTipo && compararTextoSalvo(nomeTipo, formaOperacaoSalvar)) {
             tipoOperacaoId = row.id_tp_operacao;
             console.log('[ADD] Tipo operação encontrado! ID:', tipoOperacaoId);
             break;
@@ -507,7 +528,7 @@ export const DataService = {
         }
         
         if (!tipoOperacaoId) {
-          console.log('[ADD] Tipo operação não encontrado para:', lancamento.formaOperacao);
+          console.log('[ADD] Tipo operação não encontrado para:', formaOperacaoSalvar);
         }
       }
 
@@ -521,12 +542,12 @@ export const DataService = {
         RETURNING id_lancamento
       `, [
         lancamento.dataOperacao,
-        lancamento.descricao ? `{${lancamento.descricao.trim()}}` : null,
+        `{${descricaoSalvar}}`,
         formatQtParcelasLegacy(numeroParcela, totalParcelas),
         numeroParcela,
         totalParcelas,
         `{${valorLancamento}}`,
-        lancamento.categoria && lancamento.categoria.trim() !== '' ? `{${lancamento.categoria.trim()}}` : null,
+        categoriaSalvar ? `{${categoriaSalvar}}` : null,
         lancamento.dataVencimento || null,
         lancamento.dataCompensacao || null,
         contaId, // id_conta_corr
@@ -541,6 +562,11 @@ export const DataService = {
       return {
         ...lancamento,
         id,
+        descricao: descricaoSalvar,
+        categoria: categoriaSalvar || '',
+        clienteFornecedor: clienteSalvar || '',
+        conta: contaSalvar || lancamento.conta,
+        formaOperacao: formaOperacaoSalvar || '',
         status,
         numeroParcela,
         totalParcelas,
@@ -558,6 +584,11 @@ export const DataService = {
   updateLancamento: async (id: string, lancamento: Partial<Lancamento>): Promise<Lancamento | null> => {
     try {
       await ensureParcelaColunas();
+      const descricaoSalvar = lancamento.descricao != null ? salvarMaiusculo(lancamento.descricao) : null;
+      const categoriaSalvar = lancamento.categoria != null ? salvarMaiusculoOpcional(lancamento.categoria) : null;
+      const contaSalvar = lancamento.conta != null ? salvarMaiusculo(lancamento.conta) : null;
+      const formaOperacaoSalvar = lancamento.formaOperacao != null ? salvarMaiusculoOpcional(lancamento.formaOperacao) : null;
+
       const parcelasAtualizadas =
         lancamento.numeroParcela != null ||
         lancamento.totalParcelas != null ||
@@ -586,8 +617,8 @@ export const DataService = {
       
       let pessoaId: number | null = (lancamento as any).clienteFornecedorId ?? null;
       const nomeInformado =
-        lancamento.clienteFornecedor && lancamento.clienteFornecedor.trim() !== ''
-          ? lancamento.clienteFornecedor.trim()
+        lancamento.clienteFornecedor != null
+          ? (salvarMaiusculoOpcional(lancamento.clienteFornecedor) || '')
           : '';
 
       if (pessoaId && nomeInformado) {
@@ -595,10 +626,10 @@ export const DataService = {
           const check = await pool.query('SELECT no_pessoa FROM pessoa WHERE id_pessoa = $1', [pessoaId]);
           if (check.rows.length) {
             const nomeDb = getArrayValue(check.rows[0].no_pessoa);
-            const db = (nomeDb || '').toLowerCase().trim();
-            const inf = nomeInformado.toLowerCase();
+            const db = salvarMaiusculo(nomeDb);
+            const inf = salvarMaiusculo(nomeInformado);
             const mesmoNome =
-              db === inf || (db.length > 0 && db.startsWith(inf));
+              db === inf || (db.length > 0 && inf.length > 0 && db.startsWith(inf));
             if (!mesmoNome) {
               console.log('[UPDATE] Nome diferente do id_pessoa; recalculando pessoa. id=', pessoaId, 'db=', nomeDb, 'informado=', nomeInformado);
               pessoaId = null;
@@ -622,7 +653,7 @@ export const DataService = {
           // Procurar pessoa comparando com getArrayValue
           for (const row of pessoaExistente.rows) {
             const nomePessoa = getArrayValue(row.no_pessoa);
-            if (nomePessoa && nomePessoa.toLowerCase().trim() === nome.toLowerCase().trim()) {
+            if (nomePessoa && compararTextoSalvo(nomePessoa, nome)) {
               pessoaId = row.id_pessoa;
               console.log('[UPDATE] Pessoa encontrada! ID:', pessoaId);
               break;
@@ -648,8 +679,8 @@ export const DataService = {
       }
 
       let contaId: number | null = null;
-      if (lancamento.conta && lancamento.conta !== 'TODAS AS CONTAS') {
-        console.log('[UPDATE] Buscando conta:', lancamento.conta);
+      if (contaSalvar && contaSalvar !== 'TODAS AS CONTAS') {
+        console.log('[UPDATE] Buscando conta:', contaSalvar);
         const contaResult = await pool.query(
           `SELECT id_conta_corrente, no_conta_corrente 
            FROM conta_corrente`
@@ -659,8 +690,8 @@ export const DataService = {
         // Procurar conta comparando com getArrayValue
         for (const row of contaResult.rows) {
           const nomeConta = getArrayValue(row.no_conta_corrente);
-          console.log('[UPDATE] Comparando:', nomeConta, 'com', lancamento.conta);
-          if (nomeConta && nomeConta.toLowerCase().trim() === lancamento.conta.toLowerCase().trim()) {
+          console.log('[UPDATE] Comparando:', nomeConta, 'com', contaSalvar);
+          if (nomeConta && compararTextoSalvo(nomeConta, contaSalvar)) {
             contaId = row.id_conta_corrente;
             console.log('[UPDATE] Conta encontrada! ID:', contaId);
             break;
@@ -668,14 +699,14 @@ export const DataService = {
         }
         
         if (!contaId) {
-          console.log('[UPDATE] Conta não encontrada para:', lancamento.conta);
+          console.log('[UPDATE] Conta não encontrada para:', contaSalvar);
         }
       }
 
       // Buscar id_tp_operacao pela formaOperacao
       let tipoOperacaoId: number | null = null;
-      if (lancamento.formaOperacao) {
-        console.log('[UPDATE] Buscando tipo operação:', lancamento.formaOperacao);
+      if (formaOperacaoSalvar) {
+        console.log('[UPDATE] Buscando tipo operação:', formaOperacaoSalvar);
         const tipoResult = await pool.query(
           `SELECT id_tp_operacao, no_tp_operacao 
            FROM tipo_operacao`
@@ -684,8 +715,8 @@ export const DataService = {
         
         for (const row of tipoResult.rows) {
           const nomeTipo = getArrayValue(row.no_tp_operacao);
-          console.log('[UPDATE] Comparando tipo:', nomeTipo, 'com', lancamento.formaOperacao);
-          if (nomeTipo && nomeTipo.toLowerCase().trim() === lancamento.formaOperacao.toLowerCase().trim()) {
+          console.log('[UPDATE] Comparando tipo:', nomeTipo, 'com', formaOperacaoSalvar);
+          if (nomeTipo && compararTextoSalvo(nomeTipo, formaOperacaoSalvar)) {
             tipoOperacaoId = row.id_tp_operacao;
             console.log('[UPDATE] Tipo operação encontrado! ID:', tipoOperacaoId);
             break;
@@ -693,7 +724,7 @@ export const DataService = {
         }
         
         if (!tipoOperacaoId) {
-          console.log('[UPDATE] Tipo operação não encontrado para:', lancamento.formaOperacao);
+          console.log('[UPDATE] Tipo operação não encontrado para:', formaOperacaoSalvar);
         }
       }
 
@@ -715,7 +746,7 @@ export const DataService = {
       `, [
         parseInt(id),
         lancamento.dataOperacao || existingRow.dt_operacao,
-        lancamento.descricao ? `{${lancamento.descricao}}` : existingRow.ds_lancamento,
+        descricaoSalvar ? `{${descricaoSalvar}}` : existingRow.ds_lancamento,
         parcelasAtualizadas
           ? formatQtParcelasLegacy(
               parcelasAtualizadas.numeroParcela,
@@ -725,7 +756,7 @@ export const DataService = {
         parcelasAtualizadas?.numeroParcela ?? existingRow.nr_parcela,
         parcelasAtualizadas?.totalParcelas ?? existingRow.qt_total_parcelas,
         valorLancamento !== undefined ? `{${valorLancamento}}` : existingRow.vl_lancamento,
-        lancamento.categoria ? `{${lancamento.categoria}}` : existingRow.ds_categoria,
+        categoriaSalvar ? `{${categoriaSalvar}}` : existingRow.ds_categoria,
         lancamento.dataVencimento || existingRow.dt_vencimento,
         lancamento.dataCompensacao || existingRow.dt_compensacao,
         pessoaId,
@@ -782,8 +813,8 @@ export const DataService = {
         throw new Error('O nome do banco é obrigatório');
       }
 
-      const numeroFmt = banco.numero ? `{${banco.numero.trim()}}` : null;
-      const nomeFmt = `{${banco.nome.trim()}}`;
+      const nomeFmt = `{${salvarMaiusculo(banco.nome)}}`;
+      const numeroFmt = banco.numero ? `{${salvarMaiusculo(banco.numero)}}` : null;
 
       const row = await executarInsertCompativel(
         async () => {
@@ -957,7 +988,7 @@ export const DataService = {
       const tipoCategoriaCode = tipoCategoria === 'Entrada' ? 'E' : 'S';
       
       const tipoFmt = `{${tipoCategoriaCode}}`;
-      const nomeFmt = `{${grupo.nome.trim()}}`;
+      const nomeFmt = `{${salvarMaiusculo(grupo.nome)}}`;
 
       const row = await executarInsertCompativel(
         async () => {
@@ -1057,7 +1088,7 @@ export const DataService = {
         throw new Error('Grupo de categoria selecionado não existe');
       }
 
-      const nomeCat = categoria.nome.trim();
+      const nomeCat = salvarMaiusculo(categoria.nome);
       const row = await executarInsertCompativel(
         async () => {
           const result = await pool.query(
@@ -1187,16 +1218,16 @@ export const DataService = {
       }
       
       const pessoaParams = [
-        `{${pessoa.nome.trim()}}`,
-        pessoa.nomeFantasia && pessoa.nomeFantasia.trim() !== '' ? `{${pessoa.nomeFantasia.trim()}}` : null,
+        `{${salvarMaiusculo(pessoa.nome)}}`,
+        pessoa.nomeFantasia ? `{${salvarMaiusculo(pessoa.nomeFantasia)}}` : null,
         pessoa.tipoPessoa === 'Jurídica' ? ['J'] : ['F'],
-        pessoa.documento && pessoa.documento.trim() !== '' ? `{${pessoa.documento.trim()}}` : null,
-        pessoa.logradouro && pessoa.logradouro.trim() !== '' ? `{${pessoa.logradouro.trim()}}` : null,
-        pessoa.numeroLogradouro && pessoa.numeroLogradouro.trim() !== '' ? `{${pessoa.numeroLogradouro.trim()}}` : null,
-        pessoa.complemento && pessoa.complemento.trim() !== '' ? `{${pessoa.complemento.trim()}}` : null,
-        pessoa.inscricaoEstadual && pessoa.inscricaoEstadual.trim() !== '' ? `{${pessoa.inscricaoEstadual.trim()}}` : null,
+        pessoa.documento ? `{${somenteDigitos(pessoa.documento)}}` : null,
+        pessoa.logradouro ? `{${salvarMaiusculo(pessoa.logradouro)}}` : null,
+        pessoa.numeroLogradouro ? `{${salvarMaiusculo(pessoa.numeroLogradouro)}}` : null,
+        pessoa.complemento ? `{${salvarMaiusculo(pessoa.complemento)}}` : null,
+        pessoa.inscricaoEstadual ? `{${salvarMaiusculo(pessoa.inscricaoEstadual)}}` : null,
         pessoa.situacaoPessoa && pessoa.situacaoPessoa.trim().length === 1
-          ? `{${pessoa.situacaoPessoa.trim()}}`
+          ? `{${salvarMaiusculo(pessoa.situacaoPessoa)}}`
           : null,
         pessoa.tipoParteInteressada === 'C' ? 1 : pessoa.tipoParteInteressada === 'F' ? 2 : null
       ];
@@ -1274,7 +1305,7 @@ export const DataService = {
         throw new Error('O nome da forma de operação é obrigatório');
       }
 
-      const nomeFmt = `{${forma.nome.trim()}}`;
+      const nomeFmt = `{${salvarMaiusculo(forma.nome)}}`;
       const row = await executarInsertCompativel(
         async () => {
           const result = await pool.query(
@@ -1376,8 +1407,8 @@ export const DataService = {
         throw new Error('Banco selecionado não existe');
       }
       
-      const numeroFmt = agencia.numero && agencia.numero.trim() !== '' ? `{${agencia.numero.trim()}}` : null;
-      const nomeFmt = `{${agencia.nome.trim()}}`;
+      const numeroFmt = agencia.numero ? `{${salvarMaiusculo(agencia.numero)}}` : null;
+      const nomeFmt = `{${salvarMaiusculo(agencia.nome)}}`;
 
       const row = await executarInsertCompativel(
         async () => {

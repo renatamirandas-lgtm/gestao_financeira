@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { digitarMaiusculo, mascararDocumento, validarDocumento, somenteDigitos } from '@/lib/texto';
 
 interface Banco {
   id: number;
@@ -242,11 +243,19 @@ export default function ConfiguracoesPage() {
       alert('O nome da pessoa é obrigatório');
       return;
     }
+    const documento = (formPessoa.documento || '').trim();
+    if (documento && !validarDocumento(documento, formPessoa.tipoPessoa)) {
+      alert(formPessoa.tipoPessoa === 'Jurídica' ? 'CNPJ inválido' : 'CPF inválido');
+      return;
+    }
     try {
       const res = await fetch('/api/pessoas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formPessoa)
+        body: JSON.stringify({
+          ...formPessoa,
+          documento: documento ? somenteDigitos(documento) : ''
+        })
       });
       if (res.ok) {
         setFormPessoa({
@@ -373,14 +382,14 @@ export default function ConfiguracoesPage() {
                       type="text"
                       placeholder="Número do banco"
                       value={formBanco.numero}
-                      onChange={(e) => setFormBanco({ ...formBanco, numero: e.target.value })}
+                      onChange={(e) => setFormBanco({ ...formBanco, numero: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Nome do banco"
                       value={formBanco.nome}
-                      onChange={(e) => setFormBanco({ ...formBanco, nome: e.target.value })}
+                      onChange={(e) => setFormBanco({ ...formBanco, nome: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <button onClick={salvarBanco} style={{ padding: '10px', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
@@ -433,7 +442,7 @@ export default function ConfiguracoesPage() {
                       type="text"
                       placeholder="Nome da forma de operação"
                       value={formFormaOperacao.nome}
-                      onChange={(e) => setFormFormaOperacao({ nome: e.target.value })}
+                      onChange={(e) => setFormFormaOperacao({ nome: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <button onClick={salvarFormaOperacao} style={{ padding: '10px', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
@@ -490,7 +499,7 @@ export default function ConfiguracoesPage() {
                       type="text"
                       placeholder="Nome do grupo"
                       value={formGrupoCategoria.nome}
-                      onChange={(e) => setFormGrupoCategoria({ ...formGrupoCategoria, nome: e.target.value })}
+                      onChange={(e) => setFormGrupoCategoria({ ...formGrupoCategoria, nome: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <button onClick={salvarGrupoCategoria} style={{ padding: '10px', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
@@ -551,7 +560,7 @@ export default function ConfiguracoesPage() {
                       type="text"
                       placeholder="Nome da categoria"
                       value={formCategoria.nome}
-                      onChange={(e) => setFormCategoria({ ...formCategoria, nome: e.target.value })}
+                      onChange={(e) => setFormCategoria({ ...formCategoria, nome: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <button onClick={salvarCategoria} style={{ padding: '10px', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
@@ -605,19 +614,26 @@ export default function ConfiguracoesPage() {
                       type="text"
                       placeholder="Nome *"
                       value={formPessoa.nome}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, nome: e.target.value })}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, nome: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Nome Fantasia"
                       value={formPessoa.nomeFantasia || ''}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, nomeFantasia: e.target.value })}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, nomeFantasia: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <select
                       value={formPessoa.tipoPessoa}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, tipoPessoa: e.target.value as 'Física' | 'Jurídica' })}
+                      onChange={(e) => {
+                        const tipoPessoa = e.target.value as 'Física' | 'Jurídica';
+                        setFormPessoa({
+                          ...formPessoa,
+                          tipoPessoa,
+                          documento: mascararDocumento(formPessoa.documento || '', tipoPessoa)
+                        });
+                      }}
                       style={{ padding: '8px' }}
                     >
                       <option value="Física">Pessoa Física</option>
@@ -625,37 +641,40 @@ export default function ConfiguracoesPage() {
                     </select>
                     <input
                       type="text"
-                      placeholder="CPF/CNPJ"
+                      placeholder={formPessoa.tipoPessoa === 'Jurídica' ? 'CNPJ' : 'CPF'}
                       value={formPessoa.documento || ''}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, documento: e.target.value })}
+                      onChange={(e) => setFormPessoa({
+                        ...formPessoa,
+                        documento: mascararDocumento(e.target.value, formPessoa.tipoPessoa)
+                      })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Logradouro"
                       value={formPessoa.logradouro || ''}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, logradouro: e.target.value })}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, logradouro: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Número"
                       value={formPessoa.numeroLogradouro || ''}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, numeroLogradouro: e.target.value })}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, numeroLogradouro: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Complemento"
                       value={formPessoa.complemento || ''}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, complemento: e.target.value })}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, complemento: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Inscrição Estadual"
                       value={formPessoa.inscricaoEstadual || ''}
-                      onChange={(e) => setFormPessoa({ ...formPessoa, inscricaoEstadual: e.target.value })}
+                      onChange={(e) => setFormPessoa({ ...formPessoa, inscricaoEstadual: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <select
@@ -750,14 +769,14 @@ export default function ConfiguracoesPage() {
                       type="text"
                       placeholder="Número da agência"
                       value={formAgencia.numero || ''}
-                      onChange={(e) => setFormAgencia({ ...formAgencia, numero: e.target.value })}
+                      onChange={(e) => setFormAgencia({ ...formAgencia, numero: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <input
                       type="text"
                       placeholder="Nome da agência *"
                       value={formAgencia.nome}
-                      onChange={(e) => setFormAgencia({ ...formAgencia, nome: e.target.value })}
+                      onChange={(e) => setFormAgencia({ ...formAgencia, nome: digitarMaiusculo(e.target.value) })}
                       style={{ padding: '8px' }}
                     />
                     <button onClick={salvarAgencia} style={{ padding: '10px', background: '#0066cc', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>

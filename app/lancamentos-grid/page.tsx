@@ -6,6 +6,7 @@ import { AgGridReact } from 'ag-grid-react';
 import { ColDef, GridReadyEvent, CellValueChangedEvent, ModuleRegistry, ClientSideRowModelModule, TextEditorModule, NumberEditorModule, DateEditorModule, SelectEditorModule, RowSelectionModule } from 'ag-grid-community';
 import { Lancamento } from '@/types';
 import { formatParcelaExibicao, normalizarParcelasCampos, totalParcelasParaGerar } from '@/lib/parcelas';
+import { digitarMaiusculo } from '@/lib/texto';
 import LancamentoDrawer from './LancamentoDrawer';
 
 ModuleRegistry.registerModules([
@@ -313,6 +314,38 @@ export default function LancamentosGridPage() {
   const compactRightBoldCellStyle: any = { padding: '4px', fontSize: '12px', textAlign: 'right', fontWeight: '500' };
   const normalizarTexto = (valor: string) => valor.trim().toLowerCase();
 
+  const MaiusculoTextEditor = useMemo(() => {
+    return forwardRef((props: any, ref) => {
+      const [value, setValue] = useState<string>(props.value != null ? String(props.value) : '');
+      const inputRef = useRef<HTMLInputElement | null>(null);
+
+      useImperativeHandle(ref, () => ({
+        getValue: () => value,
+        isCancelBeforeStart: () => false,
+        isCancelAfterEnd: () => false,
+        afterGuiAttached() {
+          requestAnimationFrame(() => {
+            if (inputRef.current) {
+              inputRef.current.focus();
+              inputRef.current.select();
+            }
+          });
+        }
+      }));
+
+      return (
+        <input
+          ref={inputRef}
+          type="text"
+          value={value}
+          maxLength={props.maxLength}
+          onChange={(e) => setValue(digitarMaiusculo(e.target.value))}
+          style={{ width: '100%', padding: '4px 6px', fontSize: '12px' }}
+        />
+      );
+    });
+  }, []);
+
   const ClienteFornecedorEditor = useMemo(() => {
     return forwardRef((props: any, ref) => {
       const [valor, setValor] = useState<string>(props.value || '');
@@ -386,7 +419,7 @@ export default function LancamentosGridPage() {
 
       const confirmarValorDigitado = async () => {
         if (selecionandoRef.current) return;
-        const texto = valor.trim();
+        const texto = digitarMaiusculo(valor.trim());
         if (!texto) {
           valorCommitRef.current = '';
           if (props.node?.data) props.node.data.clienteFornecedorId = null;
@@ -504,7 +537,7 @@ export default function LancamentosGridPage() {
             ref={inputRef}
             value={valor}
             onChange={(e) => {
-              const novoValor = e.target.value;
+              const novoValor = digitarMaiusculo(e.target.value);
               valorCommitRef.current = novoValor;
               setValor(novoValor);
               buscarPessoas(novoValor);
@@ -845,12 +878,12 @@ export default function LancamentosGridPage() {
       headerName: 'Descrição',
       width: 220,
       editable: true,
-      cellEditor: 'agTextCellEditor',
+      cellEditor: 'MaiusculoTextEditor',
       cellEditorParams: {
         maxLength: 500
       },
       valueSetter: (params) => {
-        const v = params.newValue != null ? String(params.newValue) : '';
+        const v = params.newValue != null ? digitarMaiusculo(String(params.newValue)) : '';
         if (String(params.data.descricao ?? '') === v) return false;
         params.data.descricao = v;
         return true;
@@ -1050,6 +1083,13 @@ export default function LancamentosGridPage() {
       headerName: 'Observação',
       width: 200,
       editable: true,
+      cellEditor: 'MaiusculoTextEditor',
+      valueSetter: (params) => {
+        const v = params.newValue != null ? digitarMaiusculo(String(params.newValue)) : '';
+        if (String(params.data.observacao ?? '') === v) return false;
+        params.data.observacao = v;
+        return true;
+      },
       cellStyle: compactCellStyle
     }
   ], [bancos, categorias, formasPagamento]);
@@ -1063,8 +1103,9 @@ export default function LancamentosGridPage() {
   }), []);
   const components = useMemo(() => ({
     ClienteFornecedorEditor,
-    DataOperacaoEditor
-  }), [ClienteFornecedorEditor, DataOperacaoEditor]);
+    DataOperacaoEditor,
+    MaiusculoTextEditor
+  }), [ClienteFornecedorEditor, DataOperacaoEditor, MaiusculoTextEditor]);
 
   const [gridApi, setGridApi] = useState<any>(null);
   const [columnApi, setColumnApi] = useState<any>(null);
@@ -1823,7 +1864,7 @@ export default function LancamentosGridPage() {
             type="text"
             placeholder="Buscar..."
             value={filtroBusca}
-            onChange={(e) => setFiltroBusca(e.target.value)}
+            onChange={(e) => setFiltroBusca(digitarMaiusculo(e.target.value))}
             style={{ ...estiloFiltroCampo, width: '90px', minWidth: '70px', flexShrink: 1 }}
           />
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Lancamento } from '@/types';
+import { digitarMaiusculo } from '@/lib/texto';
 
 export default function LancarPage() {
   const [lancamentos, setLancamentos] = useState<Lancamento[]>([]);
@@ -374,7 +375,7 @@ export default function LancarPage() {
                 type="text"
                 value={formulario.clienteFornecedor || ''}
                 onChange={(e) => {
-                  const valor = e.target.value;
+                  const valor = digitarMaiusculo(e.target.value);
                   setFormulario({ ...formulario, clienteFornecedor: valor });
                   filtrarPessoas(valor);
                 }}
@@ -444,7 +445,7 @@ export default function LancarPage() {
               <input
                 type="text"
                 value={formulario.descricao || ''}
-                onChange={(e) => setFormulario({ ...formulario, descricao: e.target.value })}
+                onChange={(e) => setFormulario({ ...formulario, descricao: digitarMaiusculo(e.target.value) })}
                 required
                 style={{ width: '100%' }}
               />
